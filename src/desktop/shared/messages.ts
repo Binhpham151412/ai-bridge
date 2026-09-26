@@ -1,0 +1,95 @@
+import type { BridgeRunOutcome } from '../../core/bridge-engine.ts';
+import type { DoctorReport } from '../../core/preflight/doctor.ts';
+import type { UiError } from './ipc-contract.ts';
+
+/**
+ * Core outcome → a short, human error for the UI (M4 §16). Pure mapping of what Core
+ * already decided; no new policy. Technical detail goes to `details` (behind
+ * "View details"), never a stack trace. Callers redact free text before display.
+ */
+
+const CHECK_TITLES: Record<string, string> = {
+  'claude-cli': 'Claude CLI không khả dụng',
+  'codex-cli': 'Codex CLI không khả dụng',
+  'claude-auth': 'Authentication unavailable (Claude)',
+  'codex-auth': 'Authentication unavailable (Codex/ChatGPT)',
+  'api-key-env': 'Phát hiện API key trong môi trường — AI Bridge từ chối chạy',
+  'project-directory': 'Thư mục project không hợp lệ',
+  config: 'Cấu hình .ai-bridge/config.json không hợp lệ',
+  'git-repository': 'Project không thỏa điều kiện git',
+  git: 'Git không khả dụng',
+  node: 'Node không khả dụng',
+};
+
+export function describeDoctorFailure(report: DoctorReport): UiError {
+  const failing = report.checks.filter((c) => c.status === 'BLOCKED' || c.status === 'FAIL' || c.status === 'UNKNOWN');
+  const first = failing.find((c) => c.status === 'BLOCKED') ?? failing[0];
+  const title = first ? (CHECK_TITLES[first.name] ?? `Kiểm tra "${first.name}" thất bại`) : 'System check không đạt';
+  return {
+    code: `PREFLIGHT_${report.overall}`,
+    title,
+    message: 'Core từ chối bắt đầu vì System Check chưa PASS. Mở System Check để xem chi tiết.',
+    details: failing.map((c) => `[${c.status}] ${c.name} — ${c.detail}`).join('\n'),
+  };
+}
+
+export function describeRunErrorCode(errorCode: string, errorMessage: string | null): UiError {
+  const details = errorMessage ? `${errorCode}\n${errorMessage}` : errorCode;
+  const [head, sub] = errorCode.split(':');
+  let title = 'Unknown error';
+  let message = 'Run kết thúc với lỗi không xác định. Xem chi tiết kỹ thuật.';
+  if (errorCode === 'REPORT_INVALID') {
+    title = 'Report không hợp lệ';
+    message = 'Report của Claude không đúng hợp đồng report nên Core dừng run (không tự sửa).';
+  } else if (errorCode === 'RESPONSE_INVALID') {
+    title = 'ChatGPT response không hợp lệ';
+    message = 'Phản hồi của Codex/ChatGPT không đúng định dạng AI_BRIDGE_RESPONSE nên Core dừng run.';
+  } else if (sub === 'TIMEOUT') {
+    title = 'Process timeout';
+    message = `${head === 'CLAUDE_RUN_FAILED' ? 'Claude CLI' : 'Codex CLI'} chạy quá thời gian cho phép và đã bị Core dừng.`;
+  } else if (head === 'CLAUDE_RUN_FAILED') {
+    title = sub === 'SPAWN_FAILED' ? 'Claude CLI không khả dụng' : 'Claude CLI lỗi';
+    message = `Claude CLI kết thúc bất thường (${sub ?? 'unknown'}).`;
+  } else if (head === 'CODEX_RUN_FAILED') {
+    title = sub === 'SPAWN_FAILED' ? 'Codex CLI không khả dụng' : 'Codex CLI lỗi';
+    message = `Codex CLI kết thúc bất thường (${sub ?? 'unknown'}).`;
+  } else if (errorCode === 'BLOCKED_API_AUTH') {
+    title = 'Phát hiện API key trong môi trường';
+    message = 'Core từ chối gọi CLI khi có biến môi trường API key (chi phí $0 là bắt buộc).';
+  } else if (errorCode === 'PROMPT_INTEGRITY_FAILURE' || errorCode === 'REPORT_TRANSPORT_INTEGRITY_FAILURE') {
+    title = 'Lỗi toàn vẹn dữ liệu';
+    message = 'Core phát hiện dữ liệu chuyển giữa Claude và Codex không khớp hash, nên dừng run.';
+  } else if (head === 'CRASH_INJECTED') {
+    title = 'Crash injection (test)';
+    message = 'Run bị dừng bởi điểm crash injection dùng cho kiểm thử.';
+  }
+  return { code: errorCode, title, message, details };
+}
+
+/** Null when the outcome is not an error (e.g. COMPLETED with DONE/PAUSED/STOPPED). */
+export function describeRunOutcome(outcome: BridgeRunOutcome): UiError | null {
+  switch (outcome.kind) {
+    case 'BLOCKED_PREFLIGHT':
+      return describeDoctorFailure(outcome.doctorReport);
+    case 'ALREADY_RUNNING':
+      return { code: 'ALREADY_RUNNING', title: 'Project đang được session khác sử dụng', message: `Một session AI Bridge khác (pid ${outcome.pid}) đang giữ lock của project này.` };
+    case 'NO_STATE':
+      return { code: 'NO_STATE', title: 'Không có session để resume', message: 'Không tìm thấy trạng thái session đã lưu.' };
+    case 'RECOVERY_BLOCKED':
+      return { code: 'RECOVERY_BLOCKED', title: 'Session recovery bị chặn', message: 'Core xác định session này không thể resume an toàn.', details: outcome.reason };
+    case 'COMPLETED':
+      if (outcome.finalStatus === 'ERROR') return describeRunErrorCode(outcome.errorCode ?? 'UNKNOWN', outcome.errorMessage);
+      return null;
+  }
+}
+
+export function unexpectedError(err: unknown): UiError {
+  const message = err instanceof Error ? err.message : String(err);
+  return { code: 'UNEXPECTED', title: 'Unknown error', message: 'Đã xảy ra lỗi không mong đợi.', details: message };
+}
+
+export function notAllowed(action: string, status: string | null): UiError {
+  return { code: 'NOT_ALLOWED', title: `Không thể ${action} lúc này`, message: `Hành động không hợp lệ ở trạng thái hiện tại (${status ?? 'chưa chọn project'}).` };
+}
+
+export const NO_PROJECT_ERROR: UiError = { code: 'NO_PROJECT', title: 'Chưa chọn project', message: 'Chọn thư mục project trước.' };

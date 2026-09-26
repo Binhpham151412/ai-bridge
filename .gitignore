@@ -1,0 +1,5 @@
+node_modules/
+.ai-bridge/
+sandbox/
+dist-desktop/
+release/
