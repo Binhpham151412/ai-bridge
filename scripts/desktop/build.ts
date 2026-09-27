@@ -39,5 +39,6 @@ await Promise.all([
 
 await copyFile(src('renderer/index.html'), path.join(OUT, 'renderer', 'index.html'));
 await copyFile(src('renderer/styles.css'), path.join(OUT, 'renderer', 'app.css'));
+await copyFile(path.join(ROOT, 'assets', 'icon.ico'), path.join(OUT, 'icon.ico'));
 
 console.log(`Built desktop app into ${path.relative(ROOT, OUT)}${dev ? ' (dev)' : ''}`);

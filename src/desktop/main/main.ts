@@ -15,9 +15,12 @@ const DIST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(DIST_DIR, 'preload.cjs');
 const RUN_HOST = path.join(DIST_DIR, 'run-host.mjs');
 const RENDERER_INDEX = path.join(DIST_DIR, 'renderer', 'index.html');
-const ICON = app.isPackaged
-  ? path.join(DIST_DIR, 'icon.ico')
-  : path.join(DIST_DIR, '..', 'assets', 'icon.ico');
+const ICON = path.join(DIST_DIR, 'icon.ico'); // copied from assets/ by scripts/desktop/build.ts
+
+app.enableSandbox();
+// Windows groups the taskbar button (and picks its icon) by this id, not by the exe.
+if (process.platform === 'win32') app.setAppUserModelId('AI Bridge');
+if (!app.requestSingleInstanceLock()) app.quit();
 
 app.enableSandbox();
 if (!app.requestSingleInstanceLock()) app.quit();
