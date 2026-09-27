@@ -2,6 +2,12 @@
 // Fake `claude` CLI for tests. Mimics just enough of `claude -p --output-format
 // stream-json` to exercise ClaudeCodeCliAdapter without spending real quota.
 //
+// FAKE_CLAUDE_USAGE=1 adds a usage object to the result event; FAKE_CLAUDE_REPORT_EXTRA is
+// appended verbatim to the report (M4.2 journal tests).
+//
+// FAKE_CLAUDE_USAGE=1 adds a usage object to the result event; FAKE_CLAUDE_REPORT_EXTRA is
+// appended verbatim to the report (M4.2 journal tests).
+//
 // Behaviour is selected by the FAKE_CLAUDE_MODE env var:
 //   ok               - normal run: reads stdin, emits stream-json init/result
 //                       events echoing back the --session-id/--resume flag,
@@ -86,6 +92,9 @@ function readContract() {
 // test can land a pause/stop request while Claude is genuinely mid-execution.
 const delayMs = Number(process.env.FAKE_CLAUDE_DELAY_MS ?? 0);
 if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+// FAKE_CLAUDE_EXTRA_STDERR: extra text written to stderr in every mode — lets tests prove
+// that secrets printed by a CLI are redacted before being persisted or shown.
+if (process.env.FAKE_CLAUDE_EXTRA_STDERR) process.stderr.write(`${process.env.FAKE_CLAUDE_EXTRA_STDERR}\n`);
 
 if (mode === 'hang') {
   setInterval(() => {}, 1_000_000);
@@ -105,7 +114,7 @@ if (mode === 'hang') {
     const statusLine = mode === 'bad-report' ? '' : 'REPORT_STATUS: COMPLETE\n';
     writeFileSync(
       reportFile,
-      `# AI Bridge Report\n\nSESSION_ID: ${sessionId}\nITERATION: ${iteration}\n${statusLine}NEXT_ACTION: CONTINUE\n\n## TASK\n(fake) task executed\n\n## CHANGES\n- none (fake)\n\n## TESTS\nnone\n\n## ISSUES\nnone\n\n## NEXT_RECOMMENDATION\nnone\n`,
+      `# AI Bridge Report\n\nSESSION_ID: ${sessionId}\nITERATION: ${iteration}\n${statusLine}NEXT_ACTION: CONTINUE\n\n## TASK\n(fake) task executed\n\n## CHANGES\n- none (fake)\n\n## TESTS\nnone\n\n## ISSUES\nnone\n\n## NEXT_RECOMMENDATION\nnone\n${process.env.FAKE_CLAUDE_REPORT_EXTRA ?? ''}`,
       'utf8',
     );
   }
@@ -115,6 +124,7 @@ if (mode === 'hang') {
   if (permissionMode !== undefined) emit({ type: 'debug_permission_mode', text: permissionMode });
   if (allowedTools !== undefined) emit({ type: 'debug_allowed_tools', tools: allowedTools });
   if (disallowedTools !== undefined) emit({ type: 'debug_disallowed_tools', tools: disallowedTools });
-  emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionIdToReport(), num_turns: 1 });
+  const usage = process.env.FAKE_CLAUDE_USAGE === '1' ? { usage: { input_tokens: 10, cache_creation_input_tokens: 20, cache_read_input_tokens: 30, output_tokens: 40 } } : {};
+  emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionIdToReport(), num_turns: 1, ...usage });
   process.exit(0);
 }

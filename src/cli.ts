@@ -47,6 +47,11 @@ function printRunOutcome(outcome: Awaited<ReturnType<BridgeEngine['start']>>, pr
     process.exitCode = 2;
     return;
   }
+  if (outcome.kind === 'INVALID_OPTIONS') {
+    console.error(`Invalid options: ${outcome.reason}`);
+    process.exitCode = 1;
+    return;
+  }
   if (outcome.kind === 'NO_STATE') {
     console.error('No session state found — nothing to resume.');
     process.exitCode = 1;

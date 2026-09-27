@@ -41,7 +41,7 @@ export function App() {
             </span>
           </div>
           <div className="topbar-item">
-            <span className="topbar-label">Session</span>
+            <span className="topbar-label">AI Bridge session</span>
             <span className="topbar-value mono">{status?.runId ?? '—'}</span>
           </div>
           <div className="topbar-item">

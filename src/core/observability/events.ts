@@ -20,6 +20,13 @@ export const EVENT_TYPES = [
   'RECOVERY_COMPLETED',
   'PAUSE_REQUESTED',
   'PAUSED',
+  // M4.1 execution lifecycle — each names exactly what was observed, nothing more.
+  'PROMPT_PERSISTED',
+  'CLAUDE_PROCESS_STARTED',
+  'CLAUDE_SESSION_RESUMED',
+  'CLAUDE_FAILED',
+  'CODEX_PROCESS_STARTED',
+  'CODEX_FAILED',
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -53,9 +60,15 @@ const DEFAULT_MESSAGES: Record<EventType, string> = {
   RECOVERY_COMPLETED: 'Recovery completed',
   PAUSE_REQUESTED: 'Pause requested',
   PAUSED: 'Paused',
+  PROMPT_PERSISTED: 'Claude prompt persisted',
+  CLAUDE_PROCESS_STARTED: 'Claude CLI process started',
+  CLAUDE_SESSION_RESUMED: 'Claude CLI session resumed',
+  CLAUDE_FAILED: 'Claude CLI failed',
+  CODEX_PROCESS_STARTED: 'Codex CLI process started',
+  CODEX_FAILED: 'Codex CLI failed',
 };
 
-const ERROR_LEVEL_EVENTS: readonly EventType[] = ['ERROR', 'TIMEOUT'];
+const ERROR_LEVEL_EVENTS: readonly EventType[] = ['ERROR', 'TIMEOUT', 'CLAUDE_FAILED', 'CODEX_FAILED'];
 
 /**
  * Simple single-backup rotation: if `filePath` is already at or over `maxBytes`, moves

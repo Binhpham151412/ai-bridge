@@ -237,6 +237,101 @@ try {
       );
       check('run lock released', !lockLeft);
     });
+  } else if (scenario === 'transparency') {
+    // M4.1 A–L: one tiny real run, then verify every link of the chain from what Core
+    // persisted and from what the UI actually displays.
+    await withApp({}, port, async (page) => {
+      await startViaUi(page, 'Create a file ok.txt containing exactly: ok. Do nothing else.', 2);
+      const done = await waitFor('run end', () => snapshot(page), finished, TEN_MIN, 2000);
+      const runId = done.status?.runId ?? '';
+      result.final = done.status;
+      check('A. AI Bridge session id present', /^\d{4}-\d{2}-\d{2}_\d{3}$/.test(runId), runId);
+      const rec = JSON.parse(await sessionFile(runId, '001-claude-execution.json')) as {
+        cliSessionId: { requested: string; reported: string | null; evidence: string };
+        input: { sha256: string; bytes: number; delivery: string };
+        process: { pid: number | null; exitCode: number | null };
+        status: string;
+      };
+      check('B. Claude CLI session id captured and CONFIRMED by the CLI', rec.cliSessionId.evidence === 'CONFIRMED_BY_CLI' && rec.cliSessionId.reported === rec.cliSessionId.requested, rec.cliSessionId);
+      const prompt = await sessionFile(runId, '001-claude-prompt.md');
+      check('C. exact prompt artifact persisted', prompt.startsWith('Create a file ok.txt'), prompt);
+      check(
+        'D. prompt SHA-256 == record == file; bytes match; stdin flushed+closed',
+        sha(prompt) === rec.input.sha256 && Buffer.byteLength(prompt) === rec.input.bytes && rec.input.delivery === 'STDIN_FLUSHED_AND_CLOSED',
+        rec.input,
+      );
+      const events = (await page.eval<{ ok: boolean; data: { event: string; runId: string }[] }>('window.aiBridge.getRecentEvents({ limit: 500 })')).data.filter((e) => e.runId === runId);
+      const names = events.map((e) => e.event);
+      const has = (e: string) => names.includes(e);
+      check('E. Claude started (PROMPT_PERSISTED → CLAUDE_PROCESS_STARTED → PROMPT_SENT)', has('PROMPT_PERSISTED') && has('CLAUDE_PROCESS_STARTED') && has('PROMPT_SENT'), names);
+      check('F. Claude completed (CLAUDE_EXITED, exit 0, COMPLETED)', has('CLAUDE_EXITED') && rec.process.exitCode === 0 && rec.status === 'COMPLETED', { exit: rec.process.exitCode, status: rec.status });
+      check('G. report detected', has('REPORT_DETECTED'));
+      check('H. report validated', has('REPORT_VALIDATED'));
+      check('I. Codex started (CODEX_STARTED + CODEX_PROCESS_STARTED)', has('CODEX_STARTED') && has('CODEX_PROCESS_STARTED'));
+      check('J. Codex response received (CODEX_EXITED)', has('CODEX_EXITED'));
+      check('K. response parsed', has('RESPONSE_PARSED'));
+      check('L. final result DONE', done.status?.status === 'DONE', done.status?.status);
+      // The UI shows the same identifiers.
+      await page.eval(`([...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'CLAUDE EXECUTION')?.click(), true)`);
+      await sleep(800);
+      const shown = await page.eval<string | null>(ui.text('exec-cli-session'));
+      check('UI shows the confirmed Claude CLI session id in CLAUDE EXECUTION', shown === rec.cliSessionId.reported, shown);
+      await page.screenshot(path.join(shotsDir, 'claude-execution.png'));
+      await page.eval(ui.click('nav-sessions'));
+      await sleep(800);
+      await page.eval(`(document.querySelector('[data-testid="session-row"]')?.click(), true)`);
+      await sleep(1000);
+      const traceRows = await page.eval<number>(`document.querySelectorAll('[data-testid="trace-row"]').length`);
+      check('Sessions trace lists every iteration', traceRows >= 1, traceRows);
+      await page.screenshot(path.join(shotsDir, 'session-trace.png'));
+    });
+  } else if (scenario === 'failure') {
+    // Controlled real failure at zero token cost: point the persisted state at a Claude
+    // session id that does not exist and RESUME — the real CLI rejects `--resume` before
+    // any model call. (Test-harness edit of the state file, as the crash tests do.)
+    const stateFile = path.join(projectPath, '.ai-bridge', 'state', 'current-session.json');
+    const state = JSON.parse(await readFile(stateFile, 'utf8')) as Record<string, unknown>;
+    const bogus = '00000000-0000-4000-8000-000000000000';
+    await writeFile(stateFile, JSON.stringify({ ...state, status: 'RESPONSE_PARSED', iteration: 1, claudeSessionId: bogus }, null, 2), 'utf8');
+    const runId = String(state.runId);
+    await withApp({}, port, async (page) => {
+      await waitFor('RESUME offered', () => page.eval<boolean | null>(ui.disabled('btn-resume')), (d) => d === false, 20_000, 300);
+      await page.eval(ui.click('btn-resume'));
+      const ended = await waitFor('run end', () => snapshot(page), (s) => finished(s) && s.status?.status !== 'RESPONSE_PARSED' && s.status?.status !== 'INTERRUPTED', TEN_MIN, 1000);
+      result.final = ended.status;
+      check('AI Bridge shows ERROR/FAILED', ended.status?.status === 'ERROR', ended.status?.status);
+      const rec = JSON.parse(await sessionFile(runId, '002-claude-execution.json')) as {
+        status: string;
+        process: { exitCode: number | null };
+        errorCode: string | null;
+        mode: string;
+        continuity: { verdict: string };
+        cliSessionId: { requested: string; reported: string | null; evidence: string };
+      };
+      check('execution record FAILED with a real non-zero exit code', rec.status === 'FAILED' && typeof rec.process.exitCode === 'number' && rec.process.exitCode !== 0, rec);
+      check('resume of a non-existent session is NOT reported as verified', rec.mode === 'RESUME' && rec.continuity.verdict !== 'VERIFIED', rec.continuity);
+      const err = ended.lastError;
+      check(
+        'UI error keeps the concise code and has technical details',
+        !!err && /CLAUDE_RUN_FAILED/.test(err.code) && /Exit code: \d+/.test(err.details ?? '') && /Bridge session: /.test(err.details ?? ''),
+        err,
+      );
+      const stderr = await page.eval<{ ok: boolean; data?: { text: string } }>(`window.aiBridge.getExecutionOutput({ runId: '${runId}', iteration: 2, agent: 'claude', stream: 'stderr' })`);
+      const stdout = await page.eval<{ ok: boolean; data?: { text: string } }>(`window.aiBridge.getExecutionOutput({ runId: '${runId}', iteration: 2, agent: 'claude', stream: 'stdout' })`);
+      check('stderr/stdout of the failed call are available from the UI', stderr.ok && stdout.ok, { stderr: stderr.data?.text.slice(0, 300), stdout: stdout.data?.text.slice(0, 300) });
+      const everything = JSON.stringify({ err, stderr, stdout });
+      check('no credential-shaped strings in what reached the UI', !/sk-ant-[A-Za-z0-9_-]{8,}|sk-(proj-)?[A-Za-z0-9_-]{16,}/.test(everything));
+      await page.eval(`([...document.querySelectorAll('button')].find(b => b.textContent === 'View details')?.click(), true)`);
+      await sleep(500);
+      await page.screenshot(path.join(shotsDir, 'failure-details.png'));
+      await page.eval(ui.click('nav-sessions'));
+      await sleep(800);
+      await page.eval(`(document.querySelector('[data-testid="session-row"]')?.click(), true)`);
+      await sleep(1000);
+      const traceRows = await page.eval<number>(`document.querySelectorAll('[data-testid="trace-row"]').length`);
+      check('failed session remains inspectable (trace has both iterations)', traceRows >= 2, traceRows);
+      await page.screenshot(path.join(shotsDir, 'failure-trace.png'));
+    });
   } else {
     throw new Error(`unknown scenario ${scenario}`);
   }

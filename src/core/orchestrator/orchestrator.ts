@@ -11,6 +11,28 @@ import { checkEnvForApiKeys } from '../cost-guard.ts';
 import { readFile } from 'node:fs/promises';
 import { sha256Text, verifyPromptIntegrity, verifyReportTransportIntegrity } from '../integrity/integrity.ts';
 import { assertValidTransition, type BridgeState } from '../state-machine/transitions.ts';
+import { AtomicJsonWriter } from '../state-manager/atomic-json-writer.ts';
+import { redactSecrets } from '../security/redact.ts';
+import type { EventType } from '../observability/events.ts';
+import {
+  buildDiagnostics,
+  finalizeExecutionRecord,
+  newExecutionRecord,
+  persistCliOutput,
+  tail,
+  type ExecutionDiagnostics,
+  type ExecutionRecord,
+} from '../execution/execution-record.ts';
+
+/** M4.1: one execution-lifecycle observation (prompt persisted/sent, CLI process
+ * started/failed, session resumed) — the caller turns these into BridgeEvents. */
+export interface ExecutionEvent {
+  event: EventType;
+  iteration: number;
+  detail: string;
+  /** Small, non-secret structured facts (pid, session id, sha256, bytes, exit code). */
+  data: Record<string, string | number | boolean | null>;
+}
 
 export interface LogEntry {
   iteration: number;
@@ -83,6 +105,9 @@ export interface OrchestratorResult {
   errorMessage: string | null;
   claudeSessionId: string | null;
   codexThreadId: string | null;
+  /** M4.1: redacted, capped context of the CLI call behind an ERROR (or behind the report/
+   * response that failed validation) — null when no CLI call is involved. */
+  diagnostics: ExecutionDiagnostics | null;
 }
 
 export interface OrchestratorOptions {
@@ -111,6 +136,8 @@ export interface OrchestratorOptions {
    * adapter is ever invoked — so a caller can persist them for crash recovery without
    * waiting for run() to return. */
   onSessionUpdate?: (info: { claudeSessionId?: string; codexThreadId?: string }) => void | Promise<void>;
+  /** M4.1: execution lifecycle events. Never required for correctness — observation only. */
+  onExecutionEvent?: (e: ExecutionEvent) => void | Promise<void>;
   /** Defense-in-depth cost guard target. Defaults to process.env — override only in tests. */
   env?: NodeJS.ProcessEnv;
   /** Called synchronously the instant each state is entered — lets the caller persist
@@ -192,7 +219,22 @@ export class Orchestrator {
       errorMessage: string | null,
       claudeSessionId: string | null,
       codexThreadId: string | null,
-    ): OrchestratorResult => ({ finalStatus, iterations, transitions, errorCode, errorMessage, claudeSessionId, codexThreadId });
+      diagnostics: ExecutionDiagnostics | null = null,
+    ): OrchestratorResult => ({ finalStatus, iterations, transitions, errorCode, errorMessage, claudeSessionId, codexThreadId, diagnostics });
+
+    /** Awaited emit — keeps lifecycle events in order where the loop can wait. */
+    const emit = async (event: EventType, iteration: number, detail: string, data: ExecutionEvent['data'] = {}): Promise<void> => {
+      try {
+        await o.onExecutionEvent?.({ event, iteration, detail, data });
+      } catch {
+        // observation must never break the run
+      }
+    };
+    /** Fire-and-forget emit for synchronous callbacks (spawn, stdin flushed). */
+    const emitNow = (event: EventType, iteration: number, detail: string, data: ExecutionEvent['data'] = {}): void => {
+      void emit(event, iteration, detail, data);
+    };
+    const short = (sha: string) => `${sha.slice(0, 12)}…`;
 
     await push('IDLE', 0);
 
@@ -257,6 +299,7 @@ export class Orchestrator {
       iterations.push(record);
 
       const skipClaude = iteration === startIteration && o.resumeState?.skipClaudeThisIteration === true;
+      let claudeDiagnostics: ExecutionDiagnostics | null = null;
 
       if (!skipClaude) {
         const promptSha256 = sha256Text(prompt);
@@ -269,10 +312,35 @@ export class Orchestrator {
           return finish('ERROR', 'PROMPT_INTEGRITY_FAILURE', promptIntegrity.reason ?? null, claudeSessionId, codexThreadId);
         }
 
+        const promptBytes = Buffer.byteLength(prompt, 'utf8');
+        await emit('PROMPT_PERSISTED', iteration, `Claude prompt persisted — ${path.basename(promptPath)}, ${promptBytes} bytes, sha256 ${short(promptSha256)}`, {
+          promptFile: path.basename(promptPath),
+          promptSha256,
+          promptBytes,
+        });
+
         await push('CLAUDE_EXECUTING', iteration);
         const isResume = claudeSessionId !== null;
         const sessionIdForThisRun = claudeSessionId ?? randomUUID();
         const contract = buildReportContract({ reportPath, sessionId: o.bridgeSessionId, iteration });
+
+        // M4.1 execution record: written before spawn, rewritten when the process ends.
+        const claudeExecPath = path.join(o.sessionDir, `${nnn}-claude-execution.json`);
+        const claudeStdoutPath = path.join(o.sessionDir, `${nnn}-claude-stdout.jsonl`);
+        const claudeStderrPath = path.join(o.sessionDir, `${nnn}-claude-stderr.log`);
+        const claudeExecWriter = new AtomicJsonWriter<ExecutionRecord>(claudeExecPath);
+        let claudeExec = newExecutionRecord({
+          agent: 'claude',
+          iteration,
+          bridgeSessionId: o.bridgeSessionId,
+          mode: isResume ? 'RESUME' : 'NEW',
+          requestedSessionId: sessionIdForThisRun,
+          inputFile: promptPath,
+          inputSha256: promptSha256,
+          inputBytes: promptBytes,
+        });
+        await claudeExecWriter.write(claudeExec);
+
         const claudeResult = await o.claudeAdapter.run({
           cwd: o.projectPath,
           prompt,
@@ -284,9 +352,69 @@ export class Orchestrator {
           permissionMode: o.permissionMode ?? 'acceptEdits',
           onSpawn: (pid) => {
             o.onPidUpdate?.({ adapter: 'claude', pid });
+            claudeExec = { ...claudeExec, process: { ...claudeExec.process, pid, startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
+            void claudeExecWriter.write(claudeExec).catch(() => {});
+            emitNow(
+              'CLAUDE_PROCESS_STARTED',
+              iteration,
+              `Claude CLI process started — pid ${pid}, ${isResume ? `resuming Claude session ${sessionIdForThisRun}` : `new Claude session ${sessionIdForThisRun} (requested)`}`,
+              { pid, claudeSessionId: sessionIdForThisRun, mode: isResume ? 'RESUME' : 'NEW' },
+            );
             maybeCrash('AFTER_CLAUDE_STARTED');
           },
+          onInputFlushed: (bytes) => {
+            claudeExec = { ...claudeExec, input: { ...claudeExec.input, delivery: 'STDIN_FLUSHED_AND_CLOSED', deliveredAt: new Date().toISOString() } };
+            void claudeExecWriter.write(claudeExec).catch(() => {});
+            emitNow('PROMPT_SENT', iteration, `Prompt written to Claude CLI stdin and stdin closed — ${bytes} bytes, sha256 ${short(promptSha256)}`, {
+              promptBytes: bytes,
+              promptSha256,
+              claudeSessionId: sessionIdForThisRun,
+            });
+          },
         });
+
+        await persistCliOutput(claudeStdoutPath, claudeResult.stdout);
+        await persistCliOutput(claudeStderrPath, claudeResult.stderr);
+        claudeExec = finalizeExecutionRecord(
+          claudeExec,
+          {
+            ok: claudeResult.ok,
+            errorCode: claudeResult.errorCode,
+            exitCode: claudeResult.exitCode,
+            signal: claudeResult.signal,
+            timedOut: claudeResult.timedOut,
+            pid: claudeResult.pid,
+            startedAt: claudeResult.startedAt,
+            endedAt: claudeResult.endedAt,
+            durationMs: claudeResult.durationMs,
+            stdout: claudeResult.stdout,
+            stderr: claudeResult.stderr,
+            stdoutTruncated: claudeResult.stdoutTruncated,
+            stderrTruncated: claudeResult.stderrTruncated,
+            reportedSessionId: claudeResult.reportedSessionId,
+            inputDelivered: claudeResult.promptDelivered,
+            inputDeliveryError: claudeResult.promptDeliveryError,
+            executable: claudeResult.executable,
+            args: claudeResult.args,
+          },
+          { stdoutFile: claudeStdoutPath, stderrFile: claudeStderrPath },
+        );
+        await claudeExecWriter.write(claudeExec);
+        claudeDiagnostics = buildDiagnostics(claudeExec, { stdout: claudeResult.stdout, stderr: claudeResult.stderr, finalMessage: claudeResult.finalMessage }, claudeExecPath);
+        if (isResume) {
+          const c = claudeExec.continuity;
+          const verdictText =
+            c.verdict === 'VERIFIED'
+              ? 'continuity VERIFIED (the CLI reported the same session id)'
+              : c.verdict === 'MISMATCH'
+                ? `continuity MISMATCH (the CLI reported ${c.reported})`
+                : 'continuity UNKNOWN (the CLI reported no session id)';
+          await emit('CLAUDE_SESSION_RESUMED', iteration, `Claude CLI session ${sessionIdForThisRun} resumed — ${verdictText}`, {
+            claudeSessionId: sessionIdForThisRun,
+            reportedSessionId: c.reported,
+            continuity: c.verdict,
+          });
+        }
         await o.onLog?.({
           iteration,
           adapter: 'claude',
@@ -298,8 +426,21 @@ export class Orchestrator {
           error: claudeResult.ok ? null : claudeResult.errorCode,
         });
         if (!claudeResult.ok) {
+          await emit(
+            'CLAUDE_FAILED',
+            iteration,
+            `Claude CLI failed — ${claudeResult.errorCode}, exit code ${claudeResult.exitCode ?? 'none'}, after ${claudeResult.durationMs}ms`,
+            { errorCode: claudeResult.errorCode, exitCode: claudeResult.exitCode, durationMs: claudeResult.durationMs, pid: claudeResult.pid },
+          );
           await push('ERROR', iteration);
-          return finish('ERROR', `CLAUDE_RUN_FAILED:${claudeResult.errorCode}`, claudeResult.stderr || null, claudeSessionId, codexThreadId);
+          return finish(
+            'ERROR',
+            `CLAUDE_RUN_FAILED:${claudeResult.errorCode}`,
+            claudeResult.stderr ? redactSecrets(tail(claudeResult.stderr)) : null,
+            claudeSessionId,
+            codexThreadId,
+            claudeDiagnostics,
+          );
         }
         claudeSessionId = claudeResult.sessionId;
         if (claudeSessionId) await o.onSessionUpdate?.({ claudeSessionId });
@@ -314,7 +455,7 @@ export class Orchestrator {
       if (!reportResult.valid) {
         await push('ERROR', iteration);
         const detail = reportResult.errors.map((e) => `${e.code}: ${e.message}`).join('; ');
-        return finish('ERROR', 'REPORT_INVALID', detail, claudeSessionId, codexThreadId);
+        return finish('ERROR', 'REPORT_INVALID', detail, claudeSessionId, codexThreadId, claudeDiagnostics);
       }
       record.reportSha256 = reportResult.sha256;
       await push('REPORT_VALIDATED', iteration);
@@ -332,6 +473,21 @@ export class Orchestrator {
       await writeFile(codexInputPath, codexInput, 'utf8');
 
       await push('CODEX_REVIEWING', iteration);
+      const codexExecPath = path.join(o.sessionDir, `${nnn}-codex-execution.json`);
+      const codexStdoutPath = path.join(o.sessionDir, `${nnn}-codex-stdout.jsonl`);
+      const codexStderrPath = path.join(o.sessionDir, `${nnn}-codex-stderr.log`);
+      const codexExecWriter = new AtomicJsonWriter<ExecutionRecord>(codexExecPath);
+      let codexExec = newExecutionRecord({
+        agent: 'codex',
+        iteration,
+        bridgeSessionId: o.bridgeSessionId,
+        mode: codexThreadId === null ? 'NEW' : 'RESUME',
+        requestedSessionId: codexThreadId,
+        inputFile: codexInputPath,
+        inputSha256: sha256Text(codexInput),
+        inputBytes: Buffer.byteLength(codexInput, 'utf8'),
+      });
+      await codexExecWriter.write(codexExec);
       const codexResult = await o.codexAdapter.run({
         cwd: o.projectPath,
         input: codexInput,
@@ -341,9 +497,48 @@ export class Orchestrator {
         env: o.codexEnv,
         onSpawn: (pid) => {
           o.onPidUpdate?.({ adapter: 'codex', pid });
+          codexExec = { ...codexExec, process: { ...codexExec.process, pid, startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
+          void codexExecWriter.write(codexExec).catch(() => {});
+          emitNow('CODEX_PROCESS_STARTED', iteration, `Codex CLI process started — pid ${pid}, ${codexThreadId === null ? 'new thread' : `resuming thread ${codexThreadId}`}`, {
+            pid,
+            codexThreadId,
+            mode: codexThreadId === null ? 'NEW' : 'RESUME',
+          });
           maybeCrash('AFTER_CODEX_STARTED');
         },
+        onInputFlushed: () => {
+          codexExec = { ...codexExec, input: { ...codexExec.input, delivery: 'STDIN_FLUSHED_AND_CLOSED', deliveredAt: new Date().toISOString() } };
+          void codexExecWriter.write(codexExec).catch(() => {});
+        },
       });
+      await persistCliOutput(codexStdoutPath, codexResult.stdout);
+      await persistCliOutput(codexStderrPath, codexResult.stderr);
+      codexExec = finalizeExecutionRecord(
+        codexExec,
+        {
+          ok: codexResult.ok,
+          errorCode: codexResult.errorCode,
+          exitCode: codexResult.exitCode,
+          signal: codexResult.signal,
+          timedOut: codexResult.timedOut,
+          pid: codexResult.pid,
+          startedAt: codexResult.startedAt,
+          endedAt: codexResult.endedAt,
+          durationMs: codexResult.durationMs,
+          stdout: codexResult.stdout,
+          stderr: codexResult.stderr,
+          stdoutTruncated: codexResult.stdoutTruncated,
+          stderrTruncated: codexResult.stderrTruncated,
+          reportedSessionId: codexResult.reportedThreadId,
+          inputDelivered: codexResult.inputDelivered,
+          inputDeliveryError: codexResult.inputDeliveryError,
+          executable: codexResult.executable,
+          args: codexResult.args,
+        },
+        { stdoutFile: codexStdoutPath, stderrFile: codexStderrPath },
+      );
+      await codexExecWriter.write(codexExec);
+      const codexDiagnostics = buildDiagnostics(codexExec, { stdout: codexResult.stdout, stderr: codexResult.stderr, finalMessage: null }, codexExecPath);
       await o.onLog?.({
         iteration,
         adapter: 'codex',
@@ -355,8 +550,21 @@ export class Orchestrator {
         error: codexResult.ok ? null : codexResult.errorCode,
       });
       if (!codexResult.ok) {
+        await emit(
+          'CODEX_FAILED',
+          iteration,
+          `Codex CLI failed — ${codexResult.errorCode}, exit code ${codexResult.exitCode ?? 'none'}, after ${codexResult.durationMs}ms`,
+          { errorCode: codexResult.errorCode, exitCode: codexResult.exitCode, durationMs: codexResult.durationMs, pid: codexResult.pid },
+        );
         await push('ERROR', iteration);
-        return finish('ERROR', `CODEX_RUN_FAILED:${codexResult.errorCode}`, codexResult.stderr || null, claudeSessionId, codexThreadId);
+        return finish(
+          'ERROR',
+          `CODEX_RUN_FAILED:${codexResult.errorCode}`,
+          codexResult.stderr ? redactSecrets(tail(codexResult.stderr)) : null,
+          claudeSessionId,
+          codexThreadId,
+          codexDiagnostics,
+        );
       }
       codexThreadId = codexResult.threadId;
       codexResponseHashForChain = sha256Text(codexResult.responseText ?? '');

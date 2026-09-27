@@ -62,6 +62,9 @@ const handlers: ChannelHandlers = {
   'bridge:getRecentEvents': (request) => controller.recentEvents(request.limit),
   'bridge:listSessions': () => controller.listSessions(),
   'bridge:getSessionArtifacts': (request) => controller.getSessionArtifacts(request.runId),
+  'bridge:getExecutionOutput': (request) => controller.getExecutionOutput(request),
+  'bridge:getJournal': (request) => controller.getJournal(request.runId),
+  'bridge:getJournalEntry': (request) => controller.getJournalEntry(request),
   'bridge:selectProject': async () => {
     if (!mainWindow) return { ok: false, error: { code: 'NO_WINDOW', title: 'Không có cửa sổ', message: 'Cửa sổ chính chưa sẵn sàng.' } };
     const picked = await dialog.showOpenDialog(mainWindow, { title: 'Chọn thư mục project', properties: ['openDirectory'] });

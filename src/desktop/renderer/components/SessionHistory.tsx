@@ -43,7 +43,8 @@ export function SessionHistory() {
           <table className="table" data-testid="session-table">
             <thead>
               <tr>
-                <th>Session ID</th>
+                <th>AI Bridge session</th>
+                <th>Claude CLI session</th>
                 <th>Project</th>
                 <th>Start</th>
                 <th>End</th>
@@ -66,6 +67,9 @@ export function SessionHistory() {
                     {s.runId}
                     {s.isCurrent && <span className="badge">current</span>}
                   </td>
+                  <td className="mono small" title={s.claudeSessionId ?? 'UNKNOWN'}>
+                    {s.claudeSessionId ? `${s.claudeSessionId.slice(0, 8)}…` : 'UNKNOWN'}
+                  </td>
                   <td>{projectName}</td>
                   <td>{formatDateTime(s.startedAt)}</td>
                   <td>{formatDateTime(s.endedAt)}</td>
@@ -82,7 +86,7 @@ export function SessionHistory() {
       </Card>
       {selected && (
         <Card title={`Artifacts — ${selected}`} className="history-artifacts">
-          <ArtifactViewer runId={selected} refreshKey={statusKey} />
+          <ArtifactViewer runId={selected} refreshKey={statusKey} summary={sessions?.find((s) => s.runId === selected)} />
         </Card>
       )}
     </div>

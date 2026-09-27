@@ -1,6 +1,8 @@
 import type { BridgeEvent } from '../../core/observability/events.ts';
 import type {
   BridgeSnapshot,
+  GetJournalEntryRequest,
+  GetJournalRequest,
   InvokeChannel,
   PushChannel,
   PushContract,
@@ -8,6 +10,7 @@ import type {
   ResponseOf,
   SaveProjectConfigRequest,
   SessionArtifactsRequest,
+  ExecutionOutputRequest,
   SetDefaultProjectRequest,
   StartRunRequest,
   RecentEventsRequest,
@@ -38,6 +41,12 @@ export interface AiBridgeApi {
   getRecentEvents(request: RecentEventsRequest): Promise<ResponseOf<'bridge:getRecentEvents'>>;
   listSessions(): Promise<ResponseOf<'bridge:listSessions'>>;
   getSessionArtifacts(request: SessionArtifactsRequest): Promise<ResponseOf<'bridge:getSessionArtifacts'>>;
+  /** Tail (≤256 KB, redacted) of one CLI call's persisted stdout/stderr. */
+  getExecutionOutput(request: ExecutionOutputRequest): Promise<ResponseOf<'bridge:getExecutionOutput'>>;
+  /** M4.2: the Development Journal index (rounds + which entries exist) for one session. */
+  getJournal(request: GetJournalRequest): Promise<ResponseOf<'bridge:getJournal'>>;
+  /** M4.2: one journal entry's Markdown (Claude report / ChatGPT review / prompts / final report). */
+  getJournalEntry(request: GetJournalEntryRequest): Promise<ResponseOf<'bridge:getJournalEntry'>>;
   selectProject(): Promise<ResponseOf<'bridge:selectProject'>>;
   getSettings(): Promise<ResponseOf<'bridge:getSettings'>>;
   saveProjectConfig(request: SaveProjectConfigRequest): Promise<ResponseOf<'bridge:saveProjectConfig'>>;
@@ -76,6 +85,9 @@ export function createBridgeApi(ipc: IpcRendererLike): AiBridgeApi {
     getRecentEvents: (request: RecentEventsRequest) => call('bridge:getRecentEvents', request),
     listSessions: () => call('bridge:listSessions'),
     getSessionArtifacts: (request: SessionArtifactsRequest) => call('bridge:getSessionArtifacts', request),
+    getExecutionOutput: (request: ExecutionOutputRequest) => call('bridge:getExecutionOutput', request),
+    getJournal: (request: GetJournalRequest) => call('bridge:getJournal', request),
+    getJournalEntry: (request: GetJournalEntryRequest) => call('bridge:getJournalEntry', request),
     selectProject: () => call('bridge:selectProject'),
     getSettings: () => call('bridge:getSettings'),
     saveProjectConfig: (request: SaveProjectConfigRequest) => call('bridge:saveProjectConfig', request),

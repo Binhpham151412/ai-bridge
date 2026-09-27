@@ -28,14 +28,14 @@ const LABELS: Record<EventType, string> = {
   RUN_STARTED: 'Session started',
   RUN_STOPPED: 'Stopped',
   RUN_COMPLETED: 'Run completed',
-  CLAUDE_STARTED: 'Claude started',
-  CLAUDE_EXITED: 'Claude completed',
+  CLAUDE_STARTED: 'Claude step started',
+  CLAUDE_EXITED: 'Claude CLI exited',
   REPORT_DETECTED: 'Report detected',
   REPORT_VALIDATED: 'Report validated',
-  CODEX_STARTED: 'Codex started',
-  CODEX_EXITED: 'Codex response received',
+  CODEX_STARTED: 'Codex step started',
+  CODEX_EXITED: 'Codex CLI exited',
   RESPONSE_PARSED: 'Response parsed',
-  PROMPT_SENT: 'Prompt sent to Claude',
+  PROMPT_SENT: 'Prompt written to Claude stdin',
   ITERATION_COMPLETED: 'Iteration completed',
   ERROR: 'Error',
   TIMEOUT: 'Timeout',
@@ -43,11 +43,18 @@ const LABELS: Record<EventType, string> = {
   RECOVERY_COMPLETED: 'Recovery completed',
   PAUSE_REQUESTED: 'Pause requested',
   PAUSED: 'Paused',
+  PROMPT_PERSISTED: 'Claude prompt persisted',
+  CLAUDE_PROCESS_STARTED: 'Claude CLI started',
+  CLAUDE_SESSION_RESUMED: 'Claude session resumed',
+  CLAUDE_FAILED: 'Claude CLI failed',
+  CODEX_PROCESS_STARTED: 'Codex CLI started',
+  CODEX_FAILED: 'Codex CLI failed',
 };
 
 export function describeEvent(e: BridgeEvent): { label: string; level: EventLevel } {
   let level: EventLevel = 'normal';
-  if (e.event === 'ERROR' || e.event === 'TIMEOUT') level = 'error';
+  if (e.event === 'ERROR' || e.event === 'TIMEOUT' || e.event === 'CLAUDE_FAILED' || e.event === 'CODEX_FAILED') level = 'error';
+  else if (e.event === 'CLAUDE_SESSION_RESUMED' && e.continuity !== 'VERIFIED') level = 'warning';
   else if (e.event === 'RUN_COMPLETED' && e.phase === 'ERROR') level = 'error';
   else if ((e.event === 'CLAUDE_EXITED' || e.event === 'CODEX_EXITED') && /— error$/.test(e.detail ?? '')) level = 'error';
   else if (e.event === 'RUN_STOPPED' || e.event === 'PAUSE_REQUESTED' || e.event === 'PAUSED' || e.event === 'RECOVERY_STARTED') level = 'warning';

@@ -250,6 +250,56 @@ type BridgeRecoveryCheck =
   `stop()` records a confirmed user stop as `STOPPED` (+`RUN_STOPPED`) instead of leaving
   it to read as `INTERRUPTED`; `resume()` keeps the run's original `maxIterations`.
 
+## M4.1 additions (execution transparency)
+
+- `BridgeRunOutcome.COMPLETED.diagnostics: ExecutionDiagnostics | null` — redacted, capped
+  context of the CLI call behind an error (bridge session, iteration, CLI session id +
+  evidence + continuity, exit code, duration, prompt SHA-256/bytes, stdin delivery,
+  Claude's final message, stderr/stdout tails).
+- `getExecutionOutput(runId, iteration, agent: 'claude'|'codex', stream: 'stdout'|'stderr')`
+  → last 256 KB of that call's persisted (redacted) CLI output, or null.
+- `IterationArtifacts` gained `claudeExecution` / `codexExecution` (`ExecutionView`:
+  the `<NNN>-<agent>-execution.json` record + effective status) and `codexVerdict`;
+  `SessionSummary` gained `claudeSessionId` / `codexThreadId`.
+- New events: `PROMPT_PERSISTED`, `CLAUDE_PROCESS_STARTED`, `CLAUDE_SESSION_RESUMED`,
+  `CLAUDE_FAILED`, `CODEX_PROCESS_STARTED`, `CODEX_FAILED`; `PROMPT_SENT` is now emitted
+  (prompt written to Claude's stdin and stdin closed — pipe-level evidence only).
+- Details and evidence rules: [docs/12-m4.1-session-execution-transparency-report.md](12-m4.1-session-execution-transparency-report.md).
+
+## M4.2 additions (development journal & custom review rounds)
+
+```typescript
+getJournal(runId: string): Promise<JournalIndex | null>          // null for invalid/unknown ids
+getJournalEntry(runId: string, kind: JournalEntryKind, iteration: number | null): Promise<JournalEntry | null>
+
+type JournalEntryKind =
+  | 'SESSION_INDEX' | 'FINAL_REPORT'                              // iteration: null
+  | 'CLAUDE_REPORT' | 'CHATGPT_REVIEW' | 'CLAUDE_PROMPT' | 'NEXT_PROMPT' | 'RAW_CODEX_RESPONSE';  // iteration: number
+
+interface JournalIndex {
+  runId: string;
+  status: string;
+  maxIterations: number | null;
+  rounds: { iteration: number; state: RoundState; verdict: string | null; available: JournalEntryKind[] }[];
+  hasSessionIndex: boolean;
+  hasFinalReport: boolean;
+}
+// JournalEntry = ArtifactText & { kind: JournalEntryKind; iteration: number | null }
+```
+
+- `getJournal()`/`getJournalEntry()` are read-only views over Markdown Core generates from
+  already-verified artifacts (execution records, the validated report, Codex's raw
+  response) — never a second source of truth, never model-summarized. Regenerated
+  (idempotently) on each `getJournal()` call unless the session is the live `RUNNING` one,
+  in which case the run's own background rebuild (scheduled at safe transitions) owns it.
+- `BridgeStartOptions.maxIterations` is now validated against `[1, MAX_RUN_ITERATIONS]`
+  (100) **before** preflight/lock acquisition; out-of-range input returns a new outcome
+  kind instead of `COMPLETED`:
+  ```typescript
+  | { kind: 'INVALID_OPTIONS'; reason: string }
+  ```
+- Details: [docs/13-m4.2-development-journal.md](13-m4.2-development-journal.md).
+
 ## What's intentionally NOT in this contract
 
 - UI concerns — the desktop app built against this contract in M4 lives in `src/desktop/`

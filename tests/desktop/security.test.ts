@@ -59,7 +59,8 @@ test('renderer: no Node/Electron access, no require/process/fs/child_process, on
     const text = stripComments(await readFile(file, 'utf8'));
     if (/from\s+['"](node:[^'"]+|electron|fs|child_process|path|os|process)['"]/.test(text)) offenders.push(`${rel(file)}: node/electron import`);
     if (/\brequire\s*\(/.test(text)) offenders.push(`${rel(file)}: require()`);
-    if (/\bprocess\./.test(text)) offenders.push(`${rel(file)}: process.*`);
+    // The Node global only — not a `.process` property of a record (e.g. record.process.pid).
+    if (/(?<![.\w])process\./.test(text)) offenders.push(`${rel(file)}: process.*`);
     for (const m of text.matchAll(/^import\s+(?!type\b)[^;]*?from\s+['"]([^'"]+)['"]/gm)) {
       if (/\/core\//.test(m[1]) || /\/main\//.test(m[1])) offenders.push(`${rel(file)}: runtime import of ${m[1]}`);
     }

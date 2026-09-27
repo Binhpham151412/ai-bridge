@@ -1,7 +1,9 @@
 import type { BridgeConfigView, BridgeRecoveryCheck, BridgeStatus } from '../../core/bridge-engine.ts';
 import type { DoctorReport } from '../../core/preflight/doctor.ts';
 import type { BridgeEvent } from '../../core/observability/events.ts';
-import type { SessionArtifacts, SessionSummary } from '../../core/session-history/session-history.ts';
+import type { ExecutionOutput, SessionArtifacts, SessionSummary } from '../../core/session-history/session-history.ts';
+import { JOURNAL_ENTRY_KINDS, type JournalEntryKind } from '../../core/journal/journal-types.ts';
+import type { JournalEntry, JournalIndex } from '../../core/journal/journal.ts';
 
 /**
  * The typed IPC contract between Renderer ⇄ Preload ⇄ Main (M4 §21). Every channel the
@@ -22,10 +24,13 @@ export const INVOKE_CHANNELS = [
   'bridge:getRecentEvents',
   'bridge:listSessions',
   'bridge:getSessionArtifacts',
+  'bridge:getExecutionOutput',
   'bridge:selectProject',
   'bridge:getSettings',
   'bridge:saveProjectConfig',
   'bridge:setDefaultProject',
+  'bridge:getJournal',
+  'bridge:getJournalEntry',
 ] as const;
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];
 
@@ -111,6 +116,12 @@ export interface RecentEventsRequest {
 export interface SessionArtifactsRequest {
   runId: string;
 }
+export interface ExecutionOutputRequest {
+  runId: string;
+  iteration: number;
+  agent: 'claude' | 'codex';
+  stream: 'stdout' | 'stderr';
+}
 export interface SaveProjectConfigRequest {
   config: Record<string, unknown>;
 }
@@ -118,6 +129,15 @@ export interface SetDefaultProjectRequest {
   /** true = forget the default; false = make the currently open project the default.
    * The renderer never sends a path — only the native picker (Main) produces one. */
   clear: boolean;
+}
+export interface GetJournalRequest {
+  runId: string;
+}
+export interface GetJournalEntryRequest {
+  runId: string;
+  kind: JournalEntryKind;
+  /** Omit for SESSION_INDEX/FINAL_REPORT (session-level entries); required otherwise. */
+  iteration?: number;
 }
 
 export interface InvokeContract {
@@ -131,10 +151,13 @@ export interface InvokeContract {
   'bridge:getRecentEvents': { request: RecentEventsRequest; response: DataResponse<BridgeEvent[]> };
   'bridge:listSessions': { request: void; response: DataResponse<SessionSummary[]> };
   'bridge:getSessionArtifacts': { request: SessionArtifactsRequest; response: DataResponse<SessionArtifacts> };
+  'bridge:getExecutionOutput': { request: ExecutionOutputRequest; response: DataResponse<ExecutionOutput> };
   'bridge:selectProject': { request: void; response: ActionResponse };
   'bridge:getSettings': { request: void; response: DataResponse<SettingsView> };
   'bridge:saveProjectConfig': { request: SaveProjectConfigRequest; response: ActionResponse };
   'bridge:setDefaultProject': { request: SetDefaultProjectRequest; response: ActionResponse };
+  'bridge:getJournal': { request: GetJournalRequest; response: DataResponse<JournalIndex> };
+  'bridge:getJournalEntry': { request: GetJournalEntryRequest; response: DataResponse<JournalEntry> };
 }
 
 export type RequestOf<C extends InvokeChannel> = InvokeContract[C]['request'];
@@ -152,7 +175,7 @@ export interface PushContract {
 export type Validation<T> = { ok: true; value: T } | { ok: false; reason: string };
 
 export const MAX_TASK_LENGTH = 20_000;
-export const MAX_ITERATIONS_LIMIT = 1000; // same cap Core's config validation enforces
+export const MAX_ITERATIONS_LIMIT = 100; // same cap as Core's MAX_RUN_ITERATIONS (config validation + start())
 export const MAX_RECENT_EVENTS = 1000;
 const RUN_ID = /^\d{4}-\d{2}-\d{2}_\d{3}$/;
 
@@ -203,6 +226,18 @@ function validateSessionArtifacts(payload: unknown): Validation<SessionArtifacts
   return { ok: true, value: { runId } };
 }
 
+function validateExecutionOutput(payload: unknown): Validation<ExecutionOutputRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['runId', 'iteration', 'agent', 'stream']);
+  if (extra) return { ok: false, reason: extra };
+  const { runId, iteration, agent, stream } = payload;
+  if (typeof runId !== 'string' || !RUN_ID.test(runId)) return { ok: false, reason: 'runId must look like YYYY-MM-DD_NNN' };
+  if (typeof iteration !== 'number' || !Number.isInteger(iteration) || iteration < 1 || iteration > 999) return { ok: false, reason: 'iteration must be an integer between 1 and 999' };
+  if (agent !== 'claude' && agent !== 'codex') return { ok: false, reason: 'agent must be claude or codex' };
+  if (stream !== 'stdout' && stream !== 'stderr') return { ok: false, reason: 'stream must be stdout or stderr' };
+  return { ok: true, value: { runId, iteration, agent, stream } };
+}
+
 function validateSaveConfig(payload: unknown): Validation<SaveProjectConfigRequest> {
   if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
   const extra = onlyKeys(payload, ['config']);
@@ -222,6 +257,30 @@ function validateSetDefault(payload: unknown): Validation<SetDefaultProjectReque
   return { ok: true, value: { clear: payload.clear } };
 }
 
+function validateGetJournal(payload: unknown): Validation<GetJournalRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['runId']);
+  if (extra) return { ok: false, reason: extra };
+  const { runId } = payload;
+  if (typeof runId !== 'string' || !RUN_ID.test(runId)) return { ok: false, reason: 'runId must look like YYYY-MM-DD_NNN' };
+  return { ok: true, value: { runId } };
+}
+
+function validateGetJournalEntry(payload: unknown): Validation<GetJournalEntryRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['runId', 'kind', 'iteration']);
+  if (extra) return { ok: false, reason: extra };
+  const { runId, kind, iteration } = payload;
+  if (typeof runId !== 'string' || !RUN_ID.test(runId)) return { ok: false, reason: 'runId must look like YYYY-MM-DD_NNN' };
+  if (typeof kind !== 'string' || !(JOURNAL_ENTRY_KINDS as readonly string[]).includes(kind)) {
+    return { ok: false, reason: `kind must be one of: ${JOURNAL_ENTRY_KINDS.join(', ')}` };
+  }
+  if (iteration !== undefined && (typeof iteration !== 'number' || !Number.isInteger(iteration) || iteration < 1 || iteration > 999)) {
+    return { ok: false, reason: 'iteration must be an integer between 1 and 999' };
+  }
+  return { ok: true, value: iteration === undefined ? { runId, kind: kind as JournalEntryKind } : { runId, kind: kind as JournalEntryKind, iteration } };
+}
+
 const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<RequestOf<C>> } = {
   'bridge:getSnapshot': noPayload,
   'bridge:start': validateStart,
@@ -233,10 +292,13 @@ const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<Reque
   'bridge:getRecentEvents': validateRecentEvents,
   'bridge:listSessions': noPayload,
   'bridge:getSessionArtifacts': validateSessionArtifacts,
+  'bridge:getExecutionOutput': validateExecutionOutput,
   'bridge:selectProject': noPayload,
   'bridge:getSettings': noPayload,
   'bridge:saveProjectConfig': validateSaveConfig,
   'bridge:setDefaultProject': validateSetDefault,
+  'bridge:getJournal': validateGetJournal,
+  'bridge:getJournalEntry': validateGetJournalEntry,
 };
 
 export function validateRequest<C extends InvokeChannel>(channel: C, payload: unknown): Validation<RequestOf<C>> {

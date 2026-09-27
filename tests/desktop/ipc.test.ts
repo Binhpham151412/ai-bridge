@@ -28,7 +28,7 @@ function router(handlers: ChannelHandlers) {
 // ---------------------------------------------------------------------------
 
 test('the allowlist is exactly the documented bridge:* channels', () => {
-  assert.equal(INVOKE_CHANNELS.length, 14);
+  assert.equal(INVOKE_CHANNELS.length, 17);
   for (const c of INVOKE_CHANNELS) assert.match(c, /^bridge:[a-zA-Z]+$/);
   assert.equal(isInvokeChannel('bridge:start'), true);
   for (const bad of ['bridge:exec', 'shell:openExternal', 'bridge:start ', '', null, 42, {}]) assert.equal(isInvokeChannel(bad), false);

@@ -22,6 +22,8 @@ export interface ClaudeRunOptions {
   /** Sent as --disallowedTools <a> <b> ... */
   disallowedTools?: string[];
   onSpawn?: (pid: number) => void;
+  /** The prompt was fully written to the CLI's stdin and stdin closed (see runProcess). */
+  onInputFlushed?: (bytes: number) => void;
 }
 
 export type ClaudeRunErrorCode = 'SPAWN_FAILED' | 'TIMEOUT' | 'NON_ZERO_EXIT' | 'BAD_JSON' | 'NO_RESULT_EVENT' | 'SESSION_MISMATCH';
@@ -39,6 +41,58 @@ export interface ClaudeRunResult {
   receivedDisallowedTools: string[] | null;
   stderr: string;
   durationMs: number;
+  /** Raw stream-json stdout (bounded by runProcess's maxBufferBytes) — the CLI's own
+   * event output, persisted by the orchestrator as "CLI output". Not a transcript. */
+  stdout: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  /** The session id the CLI itself reported in any stream event (init or result), even
+   * when the run failed — null when the CLI never reported one. Never invented. */
+  reportedSessionId: string | null;
+  pid: number | null;
+  signal: string | null;
+  startedAt: string;
+  endedAt: string;
+  promptBytes: number;
+  /** Prompt bytes flushed to the CLI's stdin and stdin closed without error. */
+  promptDelivered: boolean;
+  promptDeliveryError: string | null;
+  /** The CLI's final `result` message text, when it emitted one (success or not). */
+  finalMessage: string | null;
+  executable: string;
+  args: string[];
+}
+
+/** Tolerant scan (never throws, skips non-JSON lines) for the session id the CLI
+ * reported — prefers the final `result` event, falls back to `system/init`. */
+export function findReportedClaudeSessionId(stdout: string): string | null {
+  let initId: string | null = null;
+  for (const line of stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const e = JSON.parse(line) as StreamEvent;
+      if (typeof e.session_id !== 'string') continue;
+      if (e.type === 'result') return e.session_id;
+      initId ??= e.session_id;
+    } catch {
+      // partial/garbled line — ignored here; the strict parse below reports BAD_JSON
+    }
+  }
+  return initId;
+}
+
+/** The `result` event's text — Claude's final message for this call — or null. */
+export function findClaudeFinalMessage(stdout: string): string | null {
+  for (const line of stdout.split('\n').reverse()) {
+    if (line.trim() === '') continue;
+    try {
+      const e = JSON.parse(line) as { type?: unknown; result?: unknown };
+      if (e.type === 'result') return typeof e.result === 'string' ? e.result : null;
+    } catch {
+      // skip
+    }
+  }
+  return null;
 }
 
 interface StreamEvent {
@@ -79,9 +133,29 @@ export class ClaudeCodeCliAdapter {
       input: options.prompt,
       timeoutMs: options.timeoutMs,
       onSpawn: options.onSpawn,
+      onInputFlushed: options.onInputFlushed,
     });
 
-    const base = { exitCode: proc.exitCode, timedOut: proc.timedOut, stderr: proc.stderr, durationMs: proc.durationMs };
+    const base = {
+      exitCode: proc.exitCode,
+      timedOut: proc.timedOut,
+      stderr: proc.stderr,
+      durationMs: proc.durationMs,
+      stdout: proc.stdout,
+      stdoutTruncated: proc.stdoutTruncated,
+      stderrTruncated: proc.stderrTruncated,
+      reportedSessionId: findReportedClaudeSessionId(proc.stdout),
+      pid: proc.pid,
+      signal: proc.signal,
+      startedAt: proc.startedAt,
+      endedAt: proc.endedAt,
+      promptBytes: proc.inputBytes,
+      promptDelivered: proc.inputDelivered,
+      promptDeliveryError: proc.inputError,
+      finalMessage: findClaudeFinalMessage(proc.stdout),
+      executable: this.executable,
+      args,
+    };
     const fail = (errorCode: ClaudeRunErrorCode, sessionId: string | null = null, receivedPrompt: string | null = null): ClaudeRunResult =>
       ({
         ok: false,

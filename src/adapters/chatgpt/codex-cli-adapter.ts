@@ -16,6 +16,8 @@ export interface CodexRunOptions {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
   onSpawn?: (pid: number) => void;
+  /** The reviewer input was fully written to the CLI's stdin and stdin closed. */
+  onInputFlushed?: (bytes: number) => void;
 }
 
 export type CodexRunErrorCode = 'SPAWN_FAILED' | 'TIMEOUT' | 'NON_ZERO_EXIT' | 'BAD_JSON' | 'NO_TURN_COMPLETED' | 'THREAD_MISMATCH' | 'OUTPUT_FILE_MISSING';
@@ -29,6 +31,35 @@ export interface CodexRunResult {
   responseText: string | null;
   stderr: string;
   durationMs: number;
+  /** Raw `--json` stdout events (bounded) — persisted as "CLI output", not a transcript. */
+  stdout: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  /** thread_id the CLI reported in `thread.started`, even when the run failed; never invented. */
+  reportedThreadId: string | null;
+  pid: number | null;
+  signal: string | null;
+  startedAt: string;
+  endedAt: string;
+  inputBytes: number;
+  inputDelivered: boolean;
+  inputDeliveryError: string | null;
+  executable: string;
+  args: string[];
+}
+
+/** Tolerant scan for the `thread.started` thread id (skips non-JSON lines, never throws). */
+export function findReportedCodexThreadId(stdout: string): string | null {
+  for (const line of stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const e = JSON.parse(line) as CodexEvent;
+      if (e.type === 'thread.started' && typeof e.thread_id === 'string') return e.thread_id;
+    } catch {
+      // ignored here; the strict parse below reports BAD_JSON
+    }
+  }
+  return null;
 }
 
 interface CodexEvent {
@@ -83,9 +114,28 @@ export class CodexCliAdapter {
       input: options.input,
       timeoutMs: options.timeoutMs,
       onSpawn: options.onSpawn,
+      onInputFlushed: options.onInputFlushed,
     });
 
-    const base = { exitCode: proc.exitCode, timedOut: proc.timedOut, stderr: proc.stderr, durationMs: proc.durationMs };
+    const base = {
+      exitCode: proc.exitCode,
+      timedOut: proc.timedOut,
+      stderr: proc.stderr,
+      durationMs: proc.durationMs,
+      stdout: proc.stdout,
+      stdoutTruncated: proc.stdoutTruncated,
+      stderrTruncated: proc.stderrTruncated,
+      reportedThreadId: findReportedCodexThreadId(proc.stdout),
+      pid: proc.pid,
+      signal: proc.signal,
+      startedAt: proc.startedAt,
+      endedAt: proc.endedAt,
+      inputBytes: proc.inputBytes,
+      inputDelivered: proc.inputDelivered,
+      inputDeliveryError: proc.inputError,
+      executable: this.executable,
+      args,
+    };
     const fail = (errorCode: CodexRunErrorCode, threadId: string | null = null): CodexRunResult => ({ ok: false, threadId, errorCode, responseText: null, ...base });
 
     if (proc.timedOut) return fail('TIMEOUT');

@@ -1,26 +1,40 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, type MouseEvent, type ReactNode } from 'react';
 
 /**
  * A deliberately small Markdown renderer for reports (headings, paragraphs, lists,
- * fenced code, tables, bold/italic/inline code). It builds React elements only — no
- * `dangerouslySetInnerHTML`, no raw HTML passthrough, links shown as plain text — so a
- * report containing `<script>` or `<img onerror>` is displayed as text, never executed
- * (reports are written by an AI agent and treated as untrusted content).
+ * fenced code, tables, blockquotes, horizontal rules, links, bold/italic/inline code). It
+ * builds React elements only — no `dangerouslySetInnerHTML`, no raw HTML passthrough — so
+ * a report containing `<script>` or `<img onerror>` is displayed as text, never executed
+ * (reports are written by an AI agent and treated as untrusted content). Links render as
+ * `<a>` for normal appearance/copyability, but never navigate — `href="#"` plus a click
+ * handler that calls `preventDefault()` (M4.2: reports/reviews are untrusted, so nothing
+ * in them can steer this app to an external destination).
  */
+
+function stopNavigation(e: MouseEvent<HTMLAnchorElement>): void {
+  e.preventDefault();
+}
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   // Emphasis markers only count at word boundaries, so identifiers such as
   // SESSION_ID / 2026-09-26_001 or a*b*c stay literal text.
-  const pattern = /(`[^`]+`)|(?<![\w*])(\*\*[^*]+\*\*)(?![\w*])|(?<![\w*])(\*[^*\s][^*]*?\*)(?![\w*])|(?<![\w_])(_[^_\s][^_]*?_)(?![\w_])/g;
+  const pattern = /(`[^`]+`)|(\[[^\]]*\]\([^)\s]*\))|(?<![\w*])(\*\*[^*]+\*\*)(?![\w*])|(?<![\w*])(\*[^*\s][^*]*?\*)(?![\w*])|(?<![\w_])(_[^_\s][^_]*?_)(?![\w_])/g;
   let last = 0;
   let i = 0;
   for (let m = pattern.exec(text); m !== null; m = pattern.exec(text)) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     const token = m[0];
     const key = `${keyPrefix}-${i++}`;
+    const link = /^\[([^\]]*)\]\(([^)\s]*)\)$/.exec(token);
     if (token.startsWith('`')) nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
-    else if (token.startsWith('**')) nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    else if (link) {
+      nodes.push(
+        <a key={key} href="#" title={link[2]} onClick={stopNavigation}>
+          {link[1]}
+        </a>,
+      );
+    } else if (token.startsWith('**')) nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
     else nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
     last = m.index + token.length;
   }
@@ -34,6 +48,8 @@ function splitRow(line: string): string[] {
 
 const TABLE_DIVIDER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
 const LIST_ITEM = /^\s*([-*+]|\d+\.)\s+/;
+const HR = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
+const BLOCKQUOTE = /^\s*>\s?(.*)$/;
 
 export function Markdown({ source }: { source: string }) {
   const lines = source.replace(/\r\n/g, '\n').split('\n');
@@ -58,6 +74,29 @@ export function Markdown({ source }: { source: string }) {
         <pre key={key++} className="md-code">
           <code>{body.join('\n')}</code>
         </pre>,
+      );
+      continue;
+    }
+
+    if (HR.test(line)) {
+      blocks.push(<hr key={key++} />);
+      i++;
+      continue;
+    }
+
+    if (BLOCKQUOTE.test(line)) {
+      const body: string[] = [];
+      while (i < lines.length && BLOCKQUOTE.test(lines[i])) body.push(lines[i++].replace(BLOCKQUOTE, '$1'));
+      const k = key++;
+      blocks.push(
+        <blockquote key={k}>
+          {body.map((p, n) => (
+            <Fragment key={n}>
+              {n > 0 && <br />}
+              {renderInline(p, `bq${k}-${n}`)}
+            </Fragment>
+          ))}
+        </blockquote>,
       );
       continue;
     }
@@ -111,7 +150,9 @@ export function Markdown({ source }: { source: string }) {
     }
 
     const para: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !/^(#{1,6}\s|```)/.test(lines[i]) && !LIST_ITEM.test(lines[i])) para.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() !== '' && !/^(#{1,6}\s|```)/.test(lines[i]) && !LIST_ITEM.test(lines[i]) && !HR.test(lines[i]) && !BLOCKQUOTE.test(lines[i])) {
+      para.push(lines[i++]);
+    }
     const k = key++;
     blocks.push(
       <p key={k}>

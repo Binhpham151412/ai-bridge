@@ -25,7 +25,10 @@ export interface LoadConfigDeps {
   readFile: (path: string) => Promise<string>;
 }
 
-const MAX_ITERATIONS_CAP = 1000;
+/** Safety ceiling for review rounds per run (M4.2): large tasks may need tens of rounds,
+ * but never an unbounded loop. Shared by config validation, start() and the IPC layer. */
+export const MAX_RUN_ITERATIONS = 100;
+const MAX_ITERATIONS_CAP = MAX_RUN_ITERATIONS;
 const NUMBER_FIELDS = ['maxIterations', 'claudeTimeoutMs', 'codexTimeoutMs', 'reportMaxBytes'] as const;
 const BOOLEAN_FIELDS = ['stopOnUncommittedChanges', 'requireGitRepository'] as const;
 const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS];

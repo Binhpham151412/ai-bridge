@@ -21,6 +21,9 @@ test('the exposed API is a frozen object of fixed functions — no generic invok
   assert.deepEqual(Object.keys(api).sort(), [
     'discard',
     'doctor',
+    'getExecutionOutput',
+    'getJournal',
+    'getJournalEntry',
     'getRecentEvents',
     'getSessionArtifacts',
     'getSettings',

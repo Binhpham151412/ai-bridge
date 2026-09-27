@@ -8,10 +8,17 @@ without you copy-pasting between the two.
 Claude Code CLI  →  report  →  AI Bridge  →  Codex CLI  →  next PROMPT  →  Claude Code CLI  →  ...
 ```
 
-Status: **M4 Electron + React desktop app** — see
-[docs/11-m4-electron-react-report.md](docs/11-m4-electron-react-report.md) for what's
-built and tested (a sandboxed Electron/React UI on top of the same `BridgeEngine` the CLI
-uses, real end-to-end runs through the app, a portable Windows build);
+Status: **M4.2 Development Journal & Custom Review Rounds** — see
+[docs/14-m4.2-development-journal-report.md](docs/14-m4.2-development-journal-report.md)
+for the full milestone report (462/462 tests, real integration test) and
+[docs/13-m4.2-development-journal.md](docs/13-m4.2-development-journal.md) for the
+architecture (per-run Markdown journal, validated custom review-round cap, the Markdown
+viewer). Builds on
+[docs/12-m4.1-session-execution-transparency-report.md](docs/12-m4.1-session-execution-transparency-report.md)
+(per-call Claude/Codex session & execution transparency) and
+[docs/11-m4-electron-react-report.md](docs/11-m4-electron-react-report.md) (a sandboxed
+Electron/React UI on top of the same `BridgeEngine` the CLI uses, real end-to-end runs
+through the app, a portable Windows build);
 [docs/11-m3.5-electron-preparation-report.md](docs/11-m3.5-electron-preparation-report.md)
 for the M3.5 `BridgeEngine` Core entry point it builds on,
 [docs/10-electron-integration-contract.md](docs/10-electron-integration-contract.md) for
@@ -219,6 +226,20 @@ Codex response, the exact prompt sent to Claude, events, state — read-only). *
 cooperative, **STOP** goes through Core's process management, and after a crash or restart
 the app shows **RESUME/DISCARD** only when Core says the session is recoverable. Same $0
 model as the CLI: no API keys, no network calls of its own, no telemetry.
+
+Since M4.1 every Claude/Codex call is traceable in the app: the AI Bridge session, the
+Claude CLI session and the Codex thread are shown separately; each call's exact prompt
+(SHA-256, bytes), PID, start/end, exit code, stdin delivery and CLI output/stderr are in
+the **CLAUDE/CODEX EXECUTION** tabs, and **Sessions** shows a per-iteration trace. See
+[docs/12-m4.1-session-execution-transparency-report.md](docs/12-m4.1-session-execution-transparency-report.md).
+
+Since M4.2, **START** also lets you pick the maximum number of review rounds (a preset
+select — 1/2/3/5/10/20/30/50/Custom…, capped at 100 — the run still stops earlier the
+moment the reviewer returns DONE), and each session's Artifacts panel has a **JOURNAL**
+tab: a per-round Claude report and ChatGPT review in plain Markdown (lazy-loaded one at a
+time), a session index, and a whole-session final report once the run ends. The
+**CHATGPT RESPONSE** tab now distinguishes Raw / Review (human-readable) / Next Prompt.
+See [docs/13-m4.2-development-journal.md](docs/13-m4.2-development-journal.md).
 
 ## Known limitations
 

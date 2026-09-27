@@ -17,6 +17,10 @@
 //   sequence             - a fresh run responds CONTINUE with a fixed next
 //                       instruction; a resumed run responds DONE.
 //   hang                - never exits.
+//   done-at             - M4.2: reads "ITERATION:" from the reviewer input; responds DONE
+//                       once it is >= FAKE_CODEX_DONE_AT (default 1), else CONTINUE with
+//                       "Round <n+1> instruction." (FAKE_CODEX_DONE_AT=never → always CONTINUE).
+//                       FAKE_CODEX_NARRATIVE=1 adds a Markdown review outside the block.
 //
 // FAKE_CODEX_RESPONSE - the agent_message text to emit (defaults to a canned
 // <AI_BRIDGE_RESPONSE> block so adapter-level tests don't need to build one).
@@ -73,6 +77,32 @@ if (mode === 'hang') {
     responseText = isResume
       ? '<AI_BRIDGE_RESPONSE>\n<STATUS>DONE</STATUS>\n<PROMPT>\nNo further action needed.\n</PROMPT>\n</AI_BRIDGE_RESPONSE>\n'
       : '<AI_BRIDGE_RESPONSE>\n<STATUS>CONTINUE</STATUS>\n<PROMPT>\nSửa `src/sum.js` để throw TypeError khi tham số không phải number.\n</PROMPT>\n</AI_BRIDGE_RESPONSE>\n';
+  }
+
+  if (mode === 'done-at') {
+    const m = /ITERATION:\s*(\d+)/.exec(stdin);
+    const n = m ? Number(m[1]) : 0;
+    const doneAt = process.env.FAKE_CODEX_DONE_AT === 'never' ? Infinity : Number(process.env.FAKE_CODEX_DONE_AT ?? '1');
+    const done = n >= doneAt;
+    const narrative = process.env.FAKE_CODEX_NARRATIVE === '1'
+      ? `## Summary
+Round ${n} reviewed (fake).
+
+## Problems Found
+none (fake)
+
+## Development Phase
+Phase ${n} (fake)
+
+`
+      : '';
+    responseText = `${narrative}<AI_BRIDGE_RESPONSE>
+<STATUS>${done ? 'DONE' : 'CONTINUE'}</STATUS>
+<PROMPT>
+${done ? 'No further action needed.' : `Round ${n + 1} instruction.`}
+</PROMPT>
+</AI_BRIDGE_RESPONSE>
+`;
   }
 
   const tid = threadIdToReport();

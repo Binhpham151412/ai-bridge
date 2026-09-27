@@ -9,6 +9,11 @@ export interface RunProcessOptions {
   timeoutMs: number;
   /** Called with the child's pid as soon as it's spawned — lets a caller show a live PID before the process finishes. */
   onSpawn?: (pid: number) => void;
+  /** Called once `input` has been fully written to the child's stdin pipe and stdin was
+   * closed (the stream's own 'finish' — the OS accepted every byte). This is the strongest
+   * delivery evidence available without the child echoing its input back: it proves the
+   * bytes left this process, not that the child program has read or understood them. */
+  onInputFlushed?: (bytes: number) => void;
   /** Per-stream cap on accumulated bytes — protects against unbounded memory growth
    * from a runaway/flooding process. Once exceeded, further chunks for that stream are
    * dropped (not buffered) and `stdoutTruncated`/`stderrTruncated` is set; the process
@@ -29,6 +34,15 @@ export interface RunProcessResult {
   timedOut: boolean;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  pid: number | null;
+  startedAt: string;
+  endedAt: string;
+  /** UTF-8 byte length of `input` (0 when none was given). */
+  inputBytes: number;
+  /** True once stdin was flushed and closed without error (see onInputFlushed). */
+  inputDelivered: boolean;
+  /** e.g. EPIPE when the child exited before reading its stdin. */
+  inputError: string | null;
 }
 
 /**
@@ -40,6 +54,7 @@ export interface RunProcessResult {
  */
 export function runProcess(options: RunProcessOptions): Promise<RunProcessResult> {
   const startedAt = Date.now();
+  const startedAtIso = new Date(startedAt).toISOString();
   return new Promise((resolve) => {
     const child = spawn(options.command, options.args ?? [], {
       cwd: options.cwd,
@@ -52,6 +67,14 @@ export function runProcess(options: RunProcessOptions): Promise<RunProcessResult
 
     let timedOut = false;
     let settled = false;
+    const inputBytes = options.input === undefined ? 0 : Buffer.byteLength(options.input, 'utf8');
+    let inputDelivered = false;
+    let inputError: string | null = null;
+    // Without a listener, an EPIPE (child exits before reading stdin) would be thrown as
+    // an unhandled 'error' event and take the whole host process down.
+    child.stdin.on('error', (err) => {
+      inputError = err.message;
+    });
     const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -104,11 +127,25 @@ export function runProcess(options: RunProcessOptions): Promise<RunProcessResult
         timedOut,
         stdoutTruncated,
         stderrTruncated,
+        pid: child.pid ?? null,
+        startedAt: startedAtIso,
+        endedAt: new Date().toISOString(),
+        inputBytes,
+        inputDelivered,
+        inputError,
       });
     }
 
     if (options.input !== undefined) {
-      child.stdin.end(options.input, 'utf8');
+      child.stdin.end(options.input, 'utf8', (err?: Error | null) => {
+        if (err) {
+          inputError = inputError ?? err.message;
+          return;
+        }
+        if (inputError !== null) return;
+        inputDelivered = true;
+        options.onInputFlushed?.(inputBytes);
+      });
     } else {
       child.stdin.end();
     }

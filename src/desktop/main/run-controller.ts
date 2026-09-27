@@ -1,26 +1,44 @@
 import type { BridgeEngine, BridgeRecoveryCheck, BridgeRunOutcome, BridgeStatus, BridgeConfigView } from '../../core/bridge-engine.ts';
 import type { BridgeEvent } from '../../core/observability/events.ts';
 import type { DoctorReport } from '../../core/preflight/doctor.ts';
-import type { SessionArtifacts, SessionSummary } from '../../core/session-history/session-history.ts';
+import type { ExecutionOutput, SessionArtifacts, SessionSummary } from '../../core/session-history/session-history.ts';
+import type { JournalEntry, JournalIndex } from '../../core/journal/journal.ts';
 import type {
   ActionResponse,
   BridgeSnapshot,
   DataResponse,
+  GetJournalEntryRequest,
   PendingAction,
   ProjectInfo,
   RunOutcomeSummary,
   StartRunRequest,
   UiError,
+  ExecutionOutputRequest,
 } from '../shared/ipc-contract.ts';
 import { deriveControls } from '../shared/controls.ts';
 import { describeRunOutcome, notAllowed, NO_PROJECT_ERROR, unexpectedError } from '../shared/messages.ts';
 import { redactDoctorReport, redactEvent, redactUiError } from './redaction.ts';
+import { redactSecrets } from '../../core/security/redact.ts';
 import { isHostMessage, type HostCommand } from './run-host-protocol.ts';
 
 /** The subset of BridgeEngine Main calls in-process (all short/read-mostly calls). */
 export type EngineApi = Pick<
   BridgeEngine,
-  'subscribe' | 'status' | 'checkRecovery' | 'pause' | 'stop' | 'reset' | 'doctor' | 'recentEvents' | 'listSessions' | 'getSessionArtifacts' | 'getConfig' | 'saveConfig'
+  | 'subscribe'
+  | 'status'
+  | 'checkRecovery'
+  | 'pause'
+  | 'stop'
+  | 'reset'
+  | 'doctor'
+  | 'recentEvents'
+  | 'listSessions'
+  | 'getSessionArtifacts'
+  | 'getExecutionOutput'
+  | 'getJournal'
+  | 'getJournalEntry'
+  | 'getConfig'
+  | 'saveConfig'
 >;
 
 export interface RunHostExit {
@@ -269,6 +287,30 @@ export class RunController {
     const artifacts = await this.engine.getSessionArtifacts(runId);
     if (!artifacts) return fail({ code: 'NOT_FOUND', title: 'Không tìm thấy session', message: `Session ${runId} không tồn tại trong project này.` });
     return { ok: true, data: { ...artifacts, events: artifacts.events.map(redactEvent) } };
+  }
+
+  async getExecutionOutput(req: ExecutionOutputRequest): Promise<DataResponse<ExecutionOutput>> {
+    if (!this.engine) return fail(NO_PROJECT_ERROR);
+    const out = await this.engine.getExecutionOutput(req.runId, req.iteration, req.agent, req.stream);
+    if (!out) return fail({ code: 'NOT_FOUND', title: 'Không có output', message: `Không có ${req.stream} được lưu cho ${req.agent} ở iteration ${req.iteration} của session ${req.runId}.` });
+    // Redacted in Core already; again here — nothing unredacted crosses into the renderer.
+    return { ok: true, data: { ...out, text: redactSecrets(out.text) } };
+  }
+
+  async getJournal(runId: string): Promise<DataResponse<JournalIndex>> {
+    if (!this.engine) return fail(NO_PROJECT_ERROR);
+    const journal = await this.engine.getJournal(runId);
+    if (!journal) return fail({ code: 'NOT_FOUND', title: 'Không tìm thấy session', message: `Session ${runId} không tồn tại trong project này.` });
+    return { ok: true, data: journal };
+  }
+
+  async getJournalEntry(req: GetJournalEntryRequest): Promise<DataResponse<JournalEntry>> {
+    if (!this.engine) return fail(NO_PROJECT_ERROR);
+    const entry = await this.engine.getJournalEntry(req.runId, req.kind, req.iteration ?? null);
+    if (!entry) return fail({ code: 'NOT_FOUND', title: 'Không có nhật ký', message: `Không có mục nhật ký (${req.kind}) cho session ${req.runId}.` });
+    // Defense in depth — journal entries are rendered verbatim from reports/reviews,
+    // which are not otherwise redacted before crossing into the renderer.
+    return { ok: true, data: { ...entry, text: redactSecrets(entry.text) } };
   }
 
   async getConfig(): Promise<BridgeConfigView | null> {

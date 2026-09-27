@@ -1,5 +1,6 @@
 import type { BridgeRunOutcome } from '../../core/bridge-engine.ts';
 import type { DoctorReport } from '../../core/preflight/doctor.ts';
+import type { ExecutionDiagnostics } from '../../core/execution/execution-record.ts';
 import type { UiError } from './ipc-contract.ts';
 
 /**
@@ -33,14 +34,52 @@ export function describeDoctorFailure(report: DoctorReport): UiError {
   };
 }
 
-export function describeRunErrorCode(errorCode: string, errorMessage: string | null): UiError {
-  const details = errorMessage ? `${errorCode}\n${errorMessage}` : errorCode;
+const EVIDENCE_TEXT: Record<ExecutionDiagnostics['cliSessionIdEvidence'], string> = {
+  CONFIRMED_BY_CLI: 'confirmed by the CLI',
+  REQUESTED_NOT_CONFIRMED: 'requested by AI Bridge, NOT confirmed by the CLI',
+  UNKNOWN: 'UNKNOWN — the CLI reported none',
+};
+
+/** The "View details" block for a CLI-related failure: every identifier and number the
+ * user needs to trace it, with the evidence level stated — all fields already redacted
+ * and capped by Core (ExecutionDiagnostics). */
+export function formatDiagnostics(d: ExecutionDiagnostics): string {
+  const agent = d.agent === 'claude' ? 'Claude' : 'Codex';
+  const lines = [
+    `Bridge session: ${d.bridgeSessionId}`,
+    `Iteration: ${String(d.iteration).padStart(3, '0')}`,
+    d.continuity === 'MISMATCH'
+      ? `${agent} CLI ${d.agent === 'claude' ? 'session' : 'thread'}: resume of ${d.requestedSessionId ?? 'UNKNOWN'} requested — the CLI reported ${d.cliSessionId ?? 'UNKNOWN'} instead (continuity MISMATCH: the requested session was not continued)`
+      : `${agent} CLI ${d.agent === 'claude' ? 'session' : 'thread'}: ${d.cliSessionId ?? 'UNKNOWN'} (${EVIDENCE_TEXT[d.cliSessionIdEvidence]}${d.continuity === 'VERIFIED' ? ', resume continuity VERIFIED' : d.continuity === 'UNKNOWN' ? ', resume continuity UNKNOWN' : ''})`,
+    `Status: ${d.status}${d.errorCode ? ` (${d.errorCode})` : ''}`,
+    `Exit code: ${d.exitCode ?? 'none'}`,
+    `Duration: ${d.durationMs === null ? 'unknown' : `${d.durationMs}ms`}`,
+    `${d.agent === 'claude' ? 'Prompt' : 'Input'} SHA-256: ${d.inputSha256}`,
+    `${d.agent === 'claude' ? 'Prompt' : 'Input'} bytes: ${d.inputBytes}`,
+    `Stdin delivery: ${d.inputDelivery}`,
+    `Execution record: ${d.executionFile}`,
+  ];
+  if (d.finalMessage) lines.push('', `${agent} final message (tail):`, d.finalMessage);
+  lines.push('', 'stderr (tail):', d.stderrTail.trim() === '' ? '(empty)' : d.stderrTail);
+  if (d.stdoutTail.trim() !== '') lines.push('', 'stdout (tail):', d.stdoutTail);
+  return lines.join('\n');
+}
+
+export function describeRunErrorCode(errorCode: string, errorMessage: string | null, diagnostics: ExecutionDiagnostics | null = null): UiError {
+  const details = diagnostics
+    ? `${errorCode}\n${errorMessage ?? ''}\n\n${formatDiagnostics(diagnostics)}`.replace(/\n{3,}/g, '\n\n')
+    : errorMessage
+      ? `${errorCode}\n${errorMessage}`
+      : errorCode;
   const [head, sub] = errorCode.split(':');
   let title = 'Unknown error';
   let message = 'Run kết thúc với lỗi không xác định. Xem chi tiết kỹ thuật.';
   if (errorCode === 'REPORT_INVALID') {
     title = 'Report không hợp lệ';
-    message = 'Report của Claude không đúng hợp đồng report nên Core dừng run (không tự sửa).';
+    message =
+      diagnostics?.agent === 'claude' && diagnostics.status === 'COMPLETED' && /REPORT_MISSING/.test(errorMessage ?? '')
+        ? `Claude CLI kết thúc bình thường (exit code ${diagnostics.exitCode ?? '?'}) nhưng không ghi file report — Core dừng run. Xem "final message" của Claude trong chi tiết.`
+        : 'Report của Claude không đúng hợp đồng report nên Core dừng run (không tự sửa).';
   } else if (errorCode === 'RESPONSE_INVALID') {
     title = 'ChatGPT response không hợp lệ';
     message = 'Phản hồi của Codex/ChatGPT không đúng định dạng AI_BRIDGE_RESPONSE nên Core dừng run.';
@@ -49,10 +88,16 @@ export function describeRunErrorCode(errorCode: string, errorMessage: string | n
     message = `${head === 'CLAUDE_RUN_FAILED' ? 'Claude CLI' : 'Codex CLI'} chạy quá thời gian cho phép và đã bị Core dừng.`;
   } else if (head === 'CLAUDE_RUN_FAILED') {
     title = sub === 'SPAWN_FAILED' ? 'Claude CLI không khả dụng' : 'Claude CLI lỗi';
-    message = `Claude CLI kết thúc bất thường (${sub ?? 'unknown'}).`;
+    message =
+      sub === 'NON_ZERO_EXIT' && diagnostics?.exitCode !== undefined && diagnostics?.exitCode !== null
+        ? `Claude CLI kết thúc với exit code ${diagnostics.exitCode}.`
+        : `Claude CLI kết thúc bất thường (${sub ?? 'unknown'}).`;
   } else if (head === 'CODEX_RUN_FAILED') {
     title = sub === 'SPAWN_FAILED' ? 'Codex CLI không khả dụng' : 'Codex CLI lỗi';
-    message = `Codex CLI kết thúc bất thường (${sub ?? 'unknown'}).`;
+    message =
+      sub === 'NON_ZERO_EXIT' && diagnostics?.exitCode !== undefined && diagnostics?.exitCode !== null
+        ? `Codex CLI kết thúc với exit code ${diagnostics.exitCode}.`
+        : `Codex CLI kết thúc bất thường (${sub ?? 'unknown'}).`;
   } else if (errorCode === 'BLOCKED_API_AUTH') {
     title = 'Phát hiện API key trong môi trường';
     message = 'Core từ chối gọi CLI khi có biến môi trường API key (chi phí $0 là bắt buộc).';
@@ -73,12 +118,14 @@ export function describeRunOutcome(outcome: BridgeRunOutcome): UiError | null {
       return describeDoctorFailure(outcome.doctorReport);
     case 'ALREADY_RUNNING':
       return { code: 'ALREADY_RUNNING', title: 'Project đang được session khác sử dụng', message: `Một session AI Bridge khác (pid ${outcome.pid}) đang giữ lock của project này.` };
+    case 'INVALID_OPTIONS':
+      return { code: 'INVALID_OPTIONS', title: 'Cấu hình run không hợp lệ', message: outcome.reason };
     case 'NO_STATE':
       return { code: 'NO_STATE', title: 'Không có session để resume', message: 'Không tìm thấy trạng thái session đã lưu.' };
     case 'RECOVERY_BLOCKED':
       return { code: 'RECOVERY_BLOCKED', title: 'Session recovery bị chặn', message: 'Core xác định session này không thể resume an toàn.', details: outcome.reason };
     case 'COMPLETED':
-      if (outcome.finalStatus === 'ERROR') return describeRunErrorCode(outcome.errorCode ?? 'UNKNOWN', outcome.errorMessage);
+      if (outcome.finalStatus === 'ERROR') return describeRunErrorCode(outcome.errorCode ?? 'UNKNOWN', outcome.errorMessage, outcome.diagnostics ?? null);
       return null;
   }
 }

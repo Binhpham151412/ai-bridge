@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import type { UiError } from '../../shared/ipc-contract.ts';
-import { statusTone } from '../lib/format.ts';
+import type { ArtifactText } from '../../../core/session-history/session-history.ts';
+import { formatBytes, statusTone } from '../lib/format.ts';
 
 export function Pill({ value, label }: { value: string | null | undefined; label?: string }) {
   return (
@@ -57,5 +58,27 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
       <p className="empty-title">{title}</p>
       {children && <div className="empty-body">{children}</div>}
     </div>
+  );
+}
+
+/** Path/size/hash line shown above a rendered or raw artifact — read-only, never editable. */
+export function ArtifactMeta({ artifact, extra }: { artifact: ArtifactText; extra?: string }) {
+  return (
+    <p className="artifact-meta mono">
+      {artifact.path} · {formatBytes(artifact.bytes)} · sha256 {artifact.sha256.slice(0, 16)}…{extra ? ` · ${extra}` : ''}
+      {artifact.truncated && <span className="warn"> · hiển thị đã cắt bớt (file lớn)</span>}
+    </p>
+  );
+}
+
+/** An artifact's exact byte-for-byte text, unrendered — for "Raw" toggles everywhere. */
+export function Raw({ artifact, testId }: { artifact: ArtifactText; testId?: string }) {
+  return (
+    <>
+      <ArtifactMeta artifact={artifact} />
+      <pre className="raw" data-testid={testId ?? 'artifact-raw'}>
+        {artifact.text}
+      </pre>
+    </>
   );
 }

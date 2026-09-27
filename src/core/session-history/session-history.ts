@@ -1,7 +1,10 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { sha256Text } from '../integrity/integrity.ts';
 import { EVENT_TYPES, type BridgeEvent } from '../observability/events.ts';
+import { CodexResponseParser } from '../../reports/codex-response-parser.ts';
+import { redactSecrets } from '../security/redact.ts';
+import type { ExecutionAgent, ExecutionRecord, ExecutionStatus } from '../execution/execution-record.ts';
 
 /**
  * Read-only views over the session structure AI Bridge already writes to disk
@@ -35,6 +38,17 @@ export interface SessionSummary {
   errorCode: string | null;
   recovered: boolean;
   isCurrent: boolean;
+  /** M4.1: the Claude CLI session / Codex thread this AI Bridge session used — as the CLI
+   * reported it (or as requested, when never confirmed); null = unknown. Never invented. */
+  claudeSessionId: string | null;
+  codexThreadId: string | null;
+}
+
+/** An execution record as stored, plus what it means *now*: a record still saying
+ * RUNNING whose session is no longer running was cut off (crash or stop). */
+export interface ExecutionView {
+  record: ExecutionRecord;
+  effectiveStatus: ExecutionStatus | 'INTERRUPTED' | 'STOPPED';
 }
 
 export interface ArtifactText {
@@ -61,6 +75,11 @@ export interface IterationArtifacts {
   /** The PROMPT block extracted from Codex's response (next iteration's Claude prompt). */
   extractedPrompt: ArtifactText | null;
   integrity: Record<string, unknown> | null;
+  /** M4.1 execution records (null for sessions recorded before M4.1, or a step never reached). */
+  claudeExecution: ExecutionView | null;
+  codexExecution: ExecutionView | null;
+  /** STATUS Codex returned for this iteration (CONTINUE / DONE / NEED_HUMAN), null if none/invalid. */
+  codexVerdict: string | null;
 }
 
 export interface SessionArtifacts {
@@ -112,7 +131,7 @@ export async function readEventLog(eventsPath: string, limit = MAX_EVENTS_PER_RE
   return events.slice(-limit);
 }
 
-async function readArtifact(filePath: string): Promise<ArtifactText | null> {
+export async function readArtifact(filePath: string): Promise<ArtifactText | null> {
   const size = await stat(filePath).then((s) => (s.isFile() ? s.size : null)).catch(() => null);
   if (size === null) return null;
   const buffer = await readFile(filePath).catch(() => null);
@@ -204,7 +223,49 @@ async function listIterationNumbers(sessionDir: string): Promise<number[]> {
   return [...numbers].filter((n) => n > 0).sort((a, b) => a - b);
 }
 
-function summarize(runId: string, events: BridgeEvent[], iterations: number, current: CurrentSessionInfo | null): SessionSummary {
+function isExecutionRecord(v: unknown): v is ExecutionRecord {
+  if (typeof v !== 'object' || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return r.schema === 1 && (r.agent === 'claude' || r.agent === 'codex') && typeof r.iteration === 'number' && typeof r.status === 'string';
+}
+
+async function readExecution(sessionDir: string, nnn: string, agent: ExecutionAgent, runId: string, current: CurrentSessionInfo | null): Promise<ExecutionView | null> {
+  const raw = await readJson(path.join(sessionDir, `${nnn}-${agent}-execution.json`));
+  if (!isExecutionRecord(raw)) return null;
+  let effectiveStatus: ExecutionView['effectiveStatus'] = raw.status;
+  if (raw.status === 'RUNNING') {
+    const live = current !== null && current.runId === runId && current.displayStatus === 'RUNNING';
+    if (!live) effectiveStatus = current !== null && current.runId === runId && current.displayStatus === 'STOPPED' ? 'STOPPED' : 'INTERRUPTED';
+  }
+  return { record: raw, effectiveStatus };
+}
+
+const responseParser = new CodexResponseParser();
+
+function codexVerdict(response: ArtifactText | null): string | null {
+  if (!response || response.truncated) return null;
+  const parsed = responseParser.parse(response.text);
+  return parsed.valid ? (parsed.status ?? null) : null;
+}
+
+/** The CLI session/thread this AI Bridge session actually worked in: the id the CLI
+ * reported for the latest *successful* call. A failed call's reported id is not trusted
+ * (real finding: `claude --resume <unknown id>` exits 1 yet reports a brand-new id).
+ * Falls back to any reported id, then to the latest requested one. */
+async function latestCliId(sessionDir: string, agent: ExecutionAgent, iterations: number[]): Promise<string | null> {
+  let anyReported: string | null = null;
+  let requested: string | null = null;
+  for (const n of [...iterations].reverse()) {
+    const rec = await readJson(path.join(sessionDir, `${String(n).padStart(3, '0')}-${agent}-execution.json`));
+    if (!isExecutionRecord(rec)) continue;
+    if (rec.status === 'COMPLETED' && rec.cliSessionId.reported) return rec.cliSessionId.reported;
+    anyReported ??= rec.cliSessionId.reported;
+    requested ??= rec.cliSessionId.requested;
+  }
+  return anyReported ?? requested;
+}
+
+function summarize(runId: string, events: BridgeEvent[], iterations: number, current: CurrentSessionInfo | null, ids: { claude: string | null; codex: string | null }): SessionSummary {
   const own = events.filter((e) => e.runId === runId);
   const firstStart = own.find((e) => e.event === 'RUN_STARTED');
   const lastStart = [...own].reverse().find((e) => e.event === 'RUN_STARTED');
@@ -227,6 +288,8 @@ function summarize(runId: string, events: BridgeEvent[], iterations: number, cur
     errorCode: ended && lastEnd.detail ? lastEnd.detail : null,
     recovered: own.some((e) => e.event === 'RECOVERY_STARTED'),
     isCurrent,
+    claudeSessionId: ids.claude ?? (isCurrent && typeof current.state.claudeSessionId === 'string' ? current.state.claudeSessionId : null),
+    codexThreadId: ids.codex ?? (isCurrent && typeof current.state.codexThreadId === 'string' ? current.state.codexThreadId : null),
   };
 }
 
@@ -237,8 +300,10 @@ export async function listSessions(aiBridgeDir: string, eventsPath: string, curr
   const events = await readEventLog(eventsPath);
   const summaries: SessionSummary[] = [];
   for (const runId of names) {
-    const iterations = await listIterationNumbers(path.join(sessionsDir, runId));
-    summaries.push(summarize(runId, events, iterations.length > 0 ? iterations[iterations.length - 1] : 0, current));
+    const sessionDir = path.join(sessionsDir, runId);
+    const iterations = await listIterationNumbers(sessionDir);
+    const ids = { claude: await latestCliId(sessionDir, 'claude', iterations), codex: await latestCliId(sessionDir, 'codex', iterations) };
+    summaries.push(summarize(runId, events, iterations.length > 0 ? iterations[iterations.length - 1] : 0, current, ids));
   }
   return summaries;
 }
@@ -254,17 +319,56 @@ export async function readSessionArtifacts(aiBridgeDir: string, eventsPath: stri
     const nnn = String(n).padStart(3, '0');
     const codexInput = await readArtifact(path.join(sessionDir, `${nnn}-chatgpt-input.md`));
     const integrity = await readJson(path.join(sessionDir, `${nnn}-integrity.json`));
+    const codexResponse = await readArtifact(path.join(sessionDir, `${nnn}-chatgpt-review.md`));
     iterations.push({
       iteration: n,
       claudePrompt: await readArtifact(path.join(sessionDir, `${nnn}-claude-prompt.md`)),
       report: await resolveReport(path.join(aiBridgeDir, 'reports', `${nnn}-report.md`), codexInput, integrity),
       codexInput,
-      codexResponse: await readArtifact(path.join(sessionDir, `${nnn}-chatgpt-review.md`)),
+      codexResponse,
       extractedPrompt: await readArtifact(path.join(sessionDir, `${nnn}-extracted-prompt.md`)),
       integrity,
+      claudeExecution: await readExecution(sessionDir, nnn, 'claude', runId, current),
+      codexExecution: await readExecution(sessionDir, nnn, 'codex', runId, current),
+      codexVerdict: codexVerdict(codexResponse),
     });
   }
 
   const events = (await readEventLog(eventsPath)).filter((e) => e.runId === runId);
   return { runId, iterations, events, state: current !== null && current.runId === runId ? current.state : null };
+}
+
+export type OutputStream = 'stdout' | 'stderr';
+
+/** At most this much CLI output crosses to a caller per request — the *tail* (the end of
+ * a CLI's output is where errors and the final result live). The full file stays on disk. */
+export const MAX_OUTPUT_TAIL_BYTES = 256 * 1024;
+
+export interface ExecutionOutput {
+  path: string;
+  /** The last MAX_OUTPUT_TAIL_BYTES of the persisted (already redacted) output, redacted again. */
+  text: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+/** Reads a persisted CLI output artifact by its fixed name — the caller never supplies a
+ * path. Only the tail is read from disk (no full read of a large file). */
+export async function readExecutionOutput(aiBridgeDir: string, runId: string, iteration: number, agent: ExecutionAgent, stream: OutputStream): Promise<ExecutionOutput | null> {
+  if (!isValidRunId(runId) || !Number.isInteger(iteration) || iteration < 1 || iteration > 999) return null;
+  if ((agent !== 'claude' && agent !== 'codex') || (stream !== 'stdout' && stream !== 'stderr')) return null;
+  const nnn = String(iteration).padStart(3, '0');
+  const file = path.join(aiBridgeDir, 'sessions', runId, `${nnn}-${agent}-${stream === 'stdout' ? 'stdout.jsonl' : 'stderr.log'}`);
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) return null;
+  const bytes = info.size;
+  const length = Math.min(bytes, MAX_OUTPUT_TAIL_BYTES);
+  const handle = await open(file, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, bytes - length);
+    return { path: file, text: redactSecrets(buffer.toString('utf8')), bytes, truncated: bytes > length };
+  } finally {
+    await handle.close();
+  }
 }

@@ -13,18 +13,24 @@ import { CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
 import { Orchestrator, CRASH_POINTS, type LogEntry, type OrchestratorState, type OrchestratorFinalStatus, type CrashPoint } from './orchestrator/orchestrator.ts';
 import { appendLogLine } from './logger/logger.ts';
 import { acquireLock, releaseLock } from './lock/run-lock.ts';
-import { loadConfig, validateConfig, type AiBridgeConfig } from './config/config.ts';
+import { loadConfig, validateConfig, MAX_RUN_ITERATIONS, type AiBridgeConfig } from './config/config.ts';
 import { requestStop } from './process-manager/process-manager.ts';
 import { appendEvent, formatHumanLogLine, rotateIfOversized, type BridgeEvent } from './observability/events.ts';
 import { AtomicJsonWriter } from './state-manager/atomic-json-writer.ts';
 import { decideRecoveryStrategy, type ResumeState } from './recovery/recovery.ts';
 import { describeAgentActivity, type AgentActivity } from './status/agent-activity.ts';
+import { redactSecrets } from './security/redact.ts';
+import type { ExecutionDiagnostics } from './execution/execution-record.ts';
+import { buildJournal, isJournalEntryKind, readJournalEntry, readJournalIndex, type JournalEntry, type JournalIndex } from './journal/journal.ts';
 import {
   isValidRunId,
   listSessions,
   readEventLog,
   readSessionArtifacts,
+  readExecutionOutput,
   type CurrentSessionInfo,
+  type ExecutionOutput,
+  type OutputStream,
   type SessionArtifacts,
   type SessionSummary,
 } from './session-history/session-history.ts';
@@ -219,6 +225,7 @@ export type BridgeRunOutcome =
   | { kind: 'BLOCKED_PREFLIGHT'; doctorReport: DoctorReport }
   | { kind: 'ALREADY_RUNNING'; pid: number; doctorReport: DoctorReport }
   | { kind: 'NO_STATE' }
+  | { kind: 'INVALID_OPTIONS'; reason: string }
   | { kind: 'RECOVERY_BLOCKED'; reason: string; doctorReport: DoctorReport }
   | {
       kind: 'COMPLETED';
@@ -229,6 +236,8 @@ export type BridgeRunOutcome =
       sessionDir: string;
       claudeSessionId: string | null;
       codexThreadId: string | null;
+      /** M4.1: redacted/capped context of the CLI call behind an error (see ExecutionDiagnostics). */
+      diagnostics: ExecutionDiagnostics | null;
       doctorReport: DoctorReport;
     };
 
@@ -308,10 +317,10 @@ const TRANSITION_EVENT_MAP: Partial<Record<OrchestratorState, BridgeEvent['event
 };
 
 const TRANSITION_DETAIL_MAP: Partial<Record<OrchestratorState, (nnn: string) => string>> = {
-  CLAUDE_EXECUTING: (nnn) => `Claude started (iteration ${nnn})`,
+  CLAUDE_EXECUTING: (nnn) => `Claude step started (iteration ${nnn}) — launching Claude CLI`,
   REPORT_DETECTED: (nnn) => `Report ${nnn} detected`,
   REPORT_VALIDATED: (nnn) => `Report ${nnn} validated`,
-  CODEX_REVIEWING: (nnn) => `Codex started reviewing report ${nnn}`,
+  CODEX_REVIEWING: (nnn) => `Codex review step started for report ${nnn} — launching Codex CLI`,
   RESPONSE_PARSED: (nnn) => `Codex response ${nnn} parsed`,
   ERROR: (nnn) => `Error during iteration ${nnn}`,
   PAUSED: (nnn) => `Paused after iteration ${nnn}`,
@@ -381,6 +390,11 @@ export class BridgeEngine {
 
   async start(options: BridgeStartOptions): Promise<BridgeRunOutcome> {
     const p = enginePaths(this.projectPath);
+    // M4.2: review rounds are a per-run setting with a hard safety ceiling — never an
+    // unbounded loop, never silently clamped.
+    if (options.maxIterations !== undefined && !(Number.isInteger(options.maxIterations) && options.maxIterations >= 1 && options.maxIterations <= MAX_RUN_ITERATIONS)) {
+      return { kind: 'INVALID_OPTIONS', reason: `maxIterations must be an integer between 1 and ${MAX_RUN_ITERATIONS}, got ${String(options.maxIterations)}` };
+    }
     const preflight = await this.deps.runDoctor(this.projectPath);
     if (preflight.report.overall !== 'PASS' || !preflight.claudeExe || !preflight.codexExe) {
       return { kind: 'BLOCKED_PREFLIGHT', doctorReport: preflight.report };
@@ -417,6 +431,7 @@ export class BridgeEngine {
         sessionDir: session.sessionDir,
         claudeSessionId: result.claudeSessionId,
         codexThreadId: result.codexThreadId,
+        diagnostics: result.diagnostics,
         doctorReport: preflight.report,
       };
     } finally {
@@ -478,6 +493,7 @@ export class BridgeEngine {
         sessionDir,
         claudeSessionId: result.claudeSessionId,
         codexThreadId: result.codexThreadId,
+        diagnostics: result.diagnostics,
         doctorReport: preflight.report,
       };
     } finally {
@@ -626,6 +642,45 @@ export class BridgeEngine {
     if (!isValidRunId(runId)) return null;
     const p = enginePaths(this.projectPath);
     return readSessionArtifacts(p.aiBridgeDir, p.eventsPath, runId, await this.currentSessionInfo(p));
+  }
+
+  /** M4.1: tail of one CLI call's persisted stdout/stderr (redacted, capped), by fixed
+   * artifact name — null for invalid input or when nothing was recorded. */
+  async getExecutionOutput(runId: string, iteration: number, agent: 'claude' | 'codex', stream: OutputStream): Promise<ExecutionOutput | null> {
+    const p = enginePaths(this.projectPath);
+    return readExecutionOutput(p.aiBridgeDir, runId, iteration, agent, stream);
+  }
+
+  /** M4.2: the Development Journal index of one session (rounds + which entries exist).
+   * Regenerates the journal first unless the session is live RUNNING (then the run host
+   * owns generation) — idempotent, so this never duplicates entries. Null for an
+   * unknown/invalid run id. */
+  async getJournal(runId: string): Promise<JournalIndex | null> {
+    if (!isValidRunId(runId)) return null;
+    const p = enginePaths(this.projectPath);
+    const current = await this.currentSessionInfo(p);
+    const summary = (await listSessions(p.aiBridgeDir, p.eventsPath, current)).find((s) => s.runId === runId);
+    const artifacts = await readSessionArtifacts(p.aiBridgeDir, p.eventsPath, runId, current);
+    if (!summary || !artifacts) return null;
+    const sessionDir = path.join(p.aiBridgeDir, 'sessions', runId);
+    if (summary.status !== 'RUNNING') await buildJournal(sessionDir, summary, artifacts, path.basename(this.projectPath)).catch(() => {});
+    return readJournalIndex(sessionDir, summary, artifacts);
+  }
+
+  /** M4.2: one journal entry (Markdown) by kind + iteration — a fixed file name, never a
+   * caller-supplied path. Null for invalid input or a missing entry. */
+  async getJournalEntry(runId: string, kind: string, iteration: number | null): Promise<JournalEntry | null> {
+    if (!isValidRunId(runId) || !isJournalEntryKind(kind)) return null;
+    const p = enginePaths(this.projectPath);
+    return readJournalEntry(path.join(p.aiBridgeDir, 'sessions', runId), kind, iteration);
+  }
+
+  /** Non-fatal journal regeneration for the running session (run host side). */
+  private async rebuildJournal(p: ReturnType<typeof enginePaths>, runId: string): Promise<void> {
+    const current = await this.currentSessionInfo(p);
+    const summary = (await listSessions(p.aiBridgeDir, p.eventsPath, current)).find((s) => s.runId === runId);
+    const artifacts = await readSessionArtifacts(p.aiBridgeDir, p.eventsPath, runId, current);
+    if (summary && artifacts) await buildJournal(path.join(p.aiBridgeDir, 'sessions', runId), summary, artifacts, path.basename(this.projectPath));
   }
 
   /** The newest `limit` structured events (all sessions), oldest first. */
@@ -796,6 +851,12 @@ export class BridgeEngine {
       stopRequested = true;
     };
     process.once('SIGINT', onSigint);
+    // M4.2: the Development Journal is regenerated at round checkpoints, one rebuild at a
+    // time, and never allowed to affect the run (a journal failure is not a run failure).
+    let journalQueue: Promise<void> = Promise.resolve();
+    const scheduleJournal = () => {
+      journalQueue = journalQueue.then(() => this.rebuildJournal(p, o.bridgeSessionId)).catch(() => {});
+    };
 
     const state: SessionState = {
       runId: o.bridgeSessionId,
@@ -814,7 +875,7 @@ export class BridgeEngine {
     };
     const stateWriter = new AtomicJsonWriter<SessionState>(p.stateFile);
     await this.writeState(stateWriter, state);
-    await this.logEvent(p, { runId: o.bridgeSessionId, iteration: 0, phase: 'RUN', event: 'RUN_STARTED' });
+    await this.logEvent(p, { runId: o.bridgeSessionId, iteration: 0, phase: 'RUN', event: 'RUN_STARTED', maxIterations: o.config.maxIterations });
 
     const orchestrator = new Orchestrator({
       projectName: o.projectName,
@@ -858,6 +919,7 @@ export class BridgeEngine {
           const detail = TRANSITION_DETAIL_MAP[t.state]?.(nnn);
           void this.logEvent(p, { runId: o.bridgeSessionId, iteration: t.iteration, phase: t.state, event: mapped, detail }).catch(() => {});
         }
+        if (t.state === 'REPORT_VALIDATED' || t.state === 'PAUSED' || (t.state === 'CLAUDE_EXECUTING' && t.iteration > 1)) scheduleJournal();
       },
       onLog: async (entry: LogEntry) => {
         await appendLogLine(logFile, { timestamp: new Date().toISOString(), sessionId: o.bridgeSessionId, ...entry });
@@ -867,8 +929,16 @@ export class BridgeEngine {
           iteration: entry.iteration,
           phase: entry.adapter,
           event: entry.adapter === 'claude' ? 'CLAUDE_EXITED' : 'CODEX_EXITED',
-          detail: `${entry.adapter} exited ${entry.exitCode} (${entry.durationMs}ms) — ${entry.status}`,
+          detail: `${entry.adapter === 'claude' ? 'Claude' : 'Codex'} CLI exited — exit code ${entry.exitCode ?? 'none'}, ${entry.durationMs}ms — ${entry.status}`,
+          exitCode: entry.exitCode,
+          durationMs: entry.durationMs,
         });
+      },
+      // M4.1: execution lifecycle (prompt persisted/sent, process started, session
+      // resumed, CLI failed) → the same event stream/log as everything else. Details are
+      // redacted again here as defense in depth; data holds only ids/hashes/numbers.
+      onExecutionEvent: async (e) => {
+        await this.logEvent(p, { ...e.data, runId: o.bridgeSessionId, iteration: e.iteration, phase: state.status, event: e.event, detail: redactSecrets(e.detail) });
       },
     });
 
@@ -892,9 +962,11 @@ export class BridgeEngine {
         event: result.finalStatus === 'STOPPED' ? 'RUN_STOPPED' : 'RUN_COMPLETED',
         detail: result.errorCode ?? undefined,
       });
+      scheduleJournal();
 
       return result;
     } finally {
+      await journalQueue;
       process.removeListener('SIGINT', onSigint);
     }
   }

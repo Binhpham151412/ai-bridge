@@ -554,6 +554,54 @@ tr:focus-visible {
   overflow: auto;
   max-height: 520px;
 }
+.journal {
+  display: flex;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+.journal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 220px;
+  flex-shrink: 0;
+  overflow: auto;
+  max-height: 520px;
+  padding-right: 4px;
+}
+.journal-item {
+  width: 100%;
+  text-align: left;
+}
+.journal-round {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.journal-round-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.journal-round-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.journal-round-items .btn {
+  width: 100%;
+  text-align: left;
+}
+.journal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  max-height: 520px;
+}
 .artifact-meta {
   color: var(--text-3);
   margin: 0 0 8px;
@@ -589,6 +637,22 @@ tr:focus-visible {
   background: var(--surface-2);
   padding: 1px 4px;
   border-radius: 3px;
+}
+.markdown blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-2);
+}
+.markdown hr {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
 }
 .md-code {
   background: var(--surface-2);
@@ -739,4 +803,97 @@ tr:focus-visible {
   .dash-bottom {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---------- M4.1 execution transparency ---------- */
+.tabs {
+  flex-wrap: wrap;
+}
+.exec-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.exec-head h3 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.6px;
+}
+.exec-kv {
+  margin-top: 8px;
+}
+.exec-evidence {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.step {
+  display: grid;
+  grid-template-columns: 22px 290px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12.5px;
+}
+.step-mark {
+  font-weight: 700;
+  text-align: center;
+}
+.step-label {
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.step-note {
+  color: var(--text-2);
+}
+.step-ok .step-mark {
+  color: var(--ok);
+}
+.step-fail .step-mark,
+.step-fail .step-label {
+  color: var(--danger);
+}
+.step-unknown .step-mark {
+  color: var(--warn);
+}
+.step-pending .step-mark {
+  color: var(--accent);
+}
+.exec-continuity {
+  font-size: 12.5px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.continuity-VERIFIED {
+  background: var(--ok-soft);
+}
+.continuity-UNKNOWN,
+.continuity-MISMATCH {
+  background: var(--warn-soft);
+}
+.exec-output {
+  max-height: 360px;
+  overflow: auto;
+}
+.trace {
+  margin-bottom: 12px;
+}
+.trace-head {
+  grid-template-columns: repeat(3, max-content minmax(0, 1fr));
+  margin-bottom: 8px;
+}
+.trace-table td {
+  font-size: 12.5px;
+}
+.agent-ids {
+  margin-top: 10px;
 }

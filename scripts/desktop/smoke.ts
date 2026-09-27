@@ -42,7 +42,7 @@ try {
   const surface = await page.eval<{ keys: string[]; frozen: boolean; hasInvoke: boolean }>(
     `({ keys: Object.keys(window.aiBridge).sort(), frozen: Object.isFrozen(window.aiBridge), hasInvoke: 'invoke' in window.aiBridge || 'send' in window.aiBridge })`,
   );
-  check('preload exposes only the fixed aiBridge API (16 functions, frozen, no invoke/send)', surface.keys.length === 16 && surface.frozen && !surface.hasInvoke, surface);
+  check('preload exposes only the fixed aiBridge API (19 functions, frozen, no invoke/send)', surface.keys.length === 19 && surface.frozen && !surface.hasInvoke, surface);
 
   const escape = await page.eval<string>(`(() => { try { return typeof window.aiBridge.start.constructor('return process')(); } catch (e) { return 'blocked: ' + e.message; } })()`);
   check('CSP blocks eval-style escape (Function constructor)', escape.startsWith('blocked'), escape);

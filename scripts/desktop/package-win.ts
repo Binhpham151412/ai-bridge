@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const OUT = path.join(ROOT, 'release');
+// `--out <dir>` packages elsewhere (e.g. while a copy from release/ is open and locked).
+const outArg = process.argv.indexOf('--out');
+const OUT = outArg !== -1 ? path.resolve(process.argv[outArg + 1]) : path.join(ROOT, 'release');
 const pkg = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')) as { version: string; devDependencies: Record<string, string> };
 
 await stat(path.join(ROOT, 'dist-desktop', 'main.mjs')); // fails fast if not built

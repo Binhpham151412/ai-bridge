@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/desktop/renderer/styles.css"
+        ],
+        "createdAt": "2026-09-27T06:40:41.619Z",
+        "reason": "blockquote left-border is the standard convention for rendering Markdown blockquotes (GitHub, browser defaults, every Markdown viewer) — not a decorative dashboard-card accent; confident false positive for the 'side-tab' AI-tell pattern"
+      }
+    ]
+  }
+}

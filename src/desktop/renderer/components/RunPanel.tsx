@@ -38,7 +38,7 @@ export function RunPanel() {
         <dl className="kv">
           <dt>Phase (Core)</dt>
           <dd data-testid="run-phase">{status?.currentPhase ?? '—'}</dd>
-          <dt>Session</dt>
+          <dt>AI Bridge session</dt>
           <dd className="mono">{status?.runId ?? '—'}</dd>
           <dt>Elapsed</dt>
           <dd className="mono" data-testid="elapsed">
@@ -71,6 +71,17 @@ export function RunPanel() {
           <Pill value={status?.activity.codex ?? 'IDLE'} />
           <span className="agent-meta mono">{status?.activity.codex === 'REVIEWING' && status.codex.pid ? `pid ${status.codex.pid}` : ''}</span>
         </div>
+        <dl className="kv agent-ids">
+          <dt>Claude CLI session</dt>
+          <dd className="mono small" data-testid="claude-session-id">
+            {status?.claude.sessionId ?? '—'}
+          </dd>
+          <dt>Codex thread</dt>
+          <dd className="mono small" data-testid="codex-thread-id">
+            {status?.codex.threadId ?? '—'}
+          </dd>
+        </dl>
+        <p className="hint">Session id do CLI xác nhận (Claude Code CLI / Codex CLI), không phải danh sách hội thoại của Claude Desktop.</p>
       </Card>
     </div>
   );
