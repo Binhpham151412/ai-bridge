@@ -15,6 +15,9 @@ const DIST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(DIST_DIR, 'preload.cjs');
 const RUN_HOST = path.join(DIST_DIR, 'run-host.mjs');
 const RENDERER_INDEX = path.join(DIST_DIR, 'renderer', 'index.html');
+const ICON = app.isPackaged
+  ? path.join(DIST_DIR, 'icon.ico')
+  : path.join(DIST_DIR, '..', 'assets', 'icon.ico');
 
 app.enableSandbox();
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -109,6 +112,7 @@ function createWindow(): void {
     minHeight: 700,
     show: false,
     title: 'AI Bridge',
+    icon: ICON,
     backgroundColor: '#f6f7f9',
     autoHideMenuBar: true,
     webPreferences: {

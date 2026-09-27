@@ -5,7 +5,7 @@
 // Run via `pnpm package:win` (builds first).
 import { packager } from '@electron/packager';
 import { execFile } from 'node:child_process';
-import { readFile, rm, stat } from 'node:fs/promises';
+import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -17,6 +17,11 @@ const OUT = outArg !== -1 ? path.resolve(process.argv[outArg + 1]) : path.join(R
 const pkg = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')) as { version: string; devDependencies: Record<string, string> };
 
 await stat(path.join(ROOT, 'dist-desktop', 'main.mjs')); // fails fast if not built
+
+await copyFile(
+  path.join(ROOT, 'assets', 'icon.ico'),
+  path.join(ROOT, 'dist-desktop', 'icon.ico'),
+);
 
 // Only package.json + the bundled dist-desktop/ go into the app. Everything else
 // (src, tests, sandbox, docs, node_modules — all deps are bundled by esbuild) is left out.
@@ -31,6 +36,7 @@ const [appDir] = await packager({
   electronVersion: pkg.devDependencies.electron.replace(/^[^\d]*/, ''),
   platform: 'win32',
   arch: 'x64',
+  icon: path.join(ROOT, 'assets', 'icon.ico'),
   overwrite: true,
   prune: true,
   // Not an archive: the run host (run-host.mjs) is forked as a separate Node process
