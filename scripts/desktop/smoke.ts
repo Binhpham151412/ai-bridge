@@ -80,15 +80,17 @@ try {
     await page.eval(ui.click('btn-doctor'));
     await waitFor('doctor table', () => page.eval<boolean>(`!!document.querySelector('[data-testid="doctor-table"]')`), (v) => v, 60_000, 500);
     await page.screenshot(path.join(shots, 'system-check.png'));
-    await page.eval(ui.click('nav-sessions'));
+    await page.eval(ui.click('nav-journal'));
     await sleep(800);
-    await page.eval(`(document.querySelector('[data-testid="session-row"]')?.click(), true)`);
+    await page.screenshot(path.join(shots, 'journal.png'));
+    // ARTIFACTS opens on the project's current session by default.
+    await page.eval(ui.click('nav-artifacts'));
     await sleep(800);
-    await page.screenshot(path.join(shots, 'sessions.png'));
+    await page.screenshot(path.join(shots, 'artifacts.png'));
     await page.eval(ui.click('nav-settings'));
     await sleep(600);
     await page.screenshot(path.join(shots, 'settings.png'));
-    await page.eval(ui.click('nav-dashboard'));
+    await page.eval(ui.click('nav-run'));
   }
 } catch (err) {
   check('smoke run completed', false, err instanceof Error ? err.message : String(err));

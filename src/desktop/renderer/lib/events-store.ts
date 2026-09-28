@@ -62,3 +62,51 @@ export function describeEvent(e: BridgeEvent): { label: string; level: EventLeve
   const label = e.event === 'RUN_COMPLETED' && e.phase && e.phase !== 'DONE' ? `Run ended (${e.phase})` : LABELS[e.event];
   return { label, level };
 }
+
+/** Pipe/process-level lifecycle events: kept in the technical event log, left out of the
+ * plain-language "Recent activity" feed (the milestone events already cover each step). */
+const TECHNICAL_EVENTS: ReadonlySet<EventType> = new Set<EventType>(['PROMPT_PERSISTED', 'CLAUDE_PROCESS_STARTED', 'PROMPT_SENT', 'CODEX_PROCESS_STARTED']);
+
+export function isTechnicalEvent(e: BridgeEvent): boolean {
+  return TECHNICAL_EVENTS.has(e.event);
+}
+
+const FRIENDLY: Record<EventType, string> = {
+  RUN_STARTED: 'Run started',
+  RUN_STOPPED: 'Run stopped',
+  RUN_COMPLETED: 'Run completed',
+  CLAUDE_STARTED: 'Claude started working',
+  CLAUDE_EXITED: 'Claude finished',
+  REPORT_DETECTED: 'Report generated',
+  REPORT_VALIDATED: 'Report validated',
+  CODEX_STARTED: 'ChatGPT started reviewing',
+  CODEX_EXITED: 'ChatGPT finished reviewing',
+  RESPONSE_PARSED: 'Review received',
+  PROMPT_SENT: 'Prompt sent to Claude',
+  ITERATION_COMPLETED: 'Round completed',
+  ERROR: 'Error',
+  TIMEOUT: 'Timed out',
+  RECOVERY_STARTED: 'Recovery started',
+  RECOVERY_COMPLETED: 'Recovery completed',
+  PAUSE_REQUESTED: 'Pause requested',
+  PAUSED: 'Paused',
+  PROMPT_PERSISTED: 'Claude prompt saved',
+  CLAUDE_PROCESS_STARTED: 'Claude CLI started',
+  CLAUDE_SESSION_RESUMED: 'Claude continued its session',
+  CLAUDE_FAILED: 'Claude failed',
+  CODEX_PROCESS_STARTED: 'Codex CLI started',
+  CODEX_FAILED: 'ChatGPT (Codex) failed',
+};
+
+/** The same event, worded for the plain-language feed. Level is identical to
+ * `describeEvent`; the Core detail string is only surfaced for warnings/errors (where it
+ * carries the reason), so routine rows stay one short line. */
+export function humanizeEvent(e: BridgeEvent): { label: string; level: EventLevel; detail: string | null } {
+  const { level } = describeEvent(e);
+  let label = FRIENDLY[e.event];
+  if (e.event === 'RUN_COMPLETED' && e.phase && e.phase !== 'DONE') label = `Run ended (${e.phase})`;
+  else if ((e.event === 'CLAUDE_EXITED' || e.event === 'CODEX_EXITED') && level === 'error') label = e.event === 'CLAUDE_EXITED' ? 'Claude exited with an error' : 'ChatGPT (Codex) exited with an error';
+  else if (e.event === 'CLAUDE_SESSION_RESUMED' && level === 'warning') label = 'Claude session continuity not verified';
+  const detail = level !== 'normal' || e.event === 'RUN_STOPPED' ? (e.detail ?? null) : null;
+  return { label, level, detail };
+}

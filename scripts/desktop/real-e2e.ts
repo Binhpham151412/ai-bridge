@@ -272,14 +272,15 @@ try {
       check('K. response parsed', has('RESPONSE_PARSED'));
       check('L. final result DONE', done.status?.status === 'DONE', done.status?.status);
       // The UI shows the same identifiers.
-      await page.eval(`([...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'CLAUDE EXECUTION')?.click(), true)`);
+      // RUN → Technical details holds the current round's execution records (Claude first).
+      await page.eval(ui.click('tech-details-toggle'));
       await sleep(800);
-      const shown = await page.eval<string | null>(ui.text('exec-cli-session'));
-      check('UI shows the confirmed Claude CLI session id in CLAUDE EXECUTION', shown === rec.cliSessionId.reported, shown);
+      const shown = await page.eval<string | null>(`document.querySelector('[data-testid="exec-claude"] [data-testid="exec-cli-session"]')?.textContent ?? null`);
+      check('UI shows the confirmed Claude CLI session id in the Claude execution record', shown === rec.cliSessionId.reported, shown);
       await page.screenshot(path.join(shotsDir, 'claude-execution.png'));
-      await page.eval(ui.click('nav-sessions'));
+      await page.eval(ui.click('nav-artifacts'));
       await sleep(800);
-      await page.eval(`(document.querySelector('[data-testid="session-row"]')?.click(), true)`);
+      await page.eval(`(document.querySelector('[data-testid="artifact-item"][data-key="trace"]')?.click(), true)`);
       await sleep(1000);
       const traceRows = await page.eval<number>(`document.querySelectorAll('[data-testid="trace-row"]').length`);
       check('Sessions trace lists every iteration', traceRows >= 1, traceRows);
@@ -324,9 +325,9 @@ try {
       await page.eval(`([...document.querySelectorAll('button')].find(b => b.textContent === 'View details')?.click(), true)`);
       await sleep(500);
       await page.screenshot(path.join(shotsDir, 'failure-details.png'));
-      await page.eval(ui.click('nav-sessions'));
+      await page.eval(ui.click('nav-artifacts'));
       await sleep(800);
-      await page.eval(`(document.querySelector('[data-testid="session-row"]')?.click(), true)`);
+      await page.eval(`(document.querySelector('[data-testid="artifact-item"][data-key="trace"]')?.click(), true)`);
       await sleep(1000);
       const traceRows = await page.eval<number>(`document.querySelectorAll('[data-testid="trace-row"]').length`);
       check('failed session remains inspectable (trace has both iterations)', traceRows >= 2, traceRows);

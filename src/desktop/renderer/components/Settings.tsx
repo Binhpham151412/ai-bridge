@@ -1,14 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { SettingsView } from '../../shared/ipc-contract.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
-import { formatBytes } from '../lib/format.ts';
 import { Card, EmptyState } from './common.tsx';
 
 type NumberField = 'maxIterations' | 'claudeTimeoutMs' | 'codexTimeoutMs' | 'reportMaxBytes';
-const NUMBER_FIELDS: { key: NumberField; label: string; hint: string }[] = [
-  { key: 'maxIterations', label: 'Max iterations mặc định', hint: '1 – 1000' },
-  { key: 'claudeTimeoutMs', label: 'Claude timeout (ms)', hint: 'mặc định 1 800 000 = 30 phút' },
-  { key: 'codexTimeoutMs', label: 'Codex timeout (ms)', hint: 'mặc định 600 000 = 10 phút' },
+const NUMBER_FIELDS: { key: NumberField; label: string; hint: string; minutes?: boolean }[] = [
+  { key: 'maxIterations', label: 'Default maximum review rounds', hint: '1 – 1000 · có thể đổi cho từng run khi START' },
+  { key: 'claudeTimeoutMs', label: 'Claude timeout (ms)', hint: 'mặc định 1 800 000 = 30 phút', minutes: true },
+  { key: 'codexTimeoutMs', label: 'Codex timeout (ms)', hint: 'mặc định 600 000 = 10 phút', minutes: true },
   { key: 'reportMaxBytes', label: 'Report tối đa (bytes)', hint: 'mặc định 1 048 576' },
 ];
 const BOOLEAN_FIELDS = [
@@ -16,10 +15,18 @@ const BOOLEAN_FIELDS = [
   { key: 'requireGitRepository', label: 'Bắt buộc project là git repository' },
 ] as const;
 
+/** "= 30 phút" next to a millisecond field, computed from what is typed (display only). */
+function minutesOf(value: string | boolean | undefined): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? `= ${Math.round((n / 60000) * 10) / 10} phút` : null;
+}
+
 /**
  * Settings (M4 §15): only what Core already supports — the project's
  * `.ai-bridge/config.json` fields (validated and written by Core), plus the app's
  * default project. No API keys, credentials or passwords are ever asked for or stored.
+ * Diagnostics, logs and the security model live under SYSTEM.
  */
 export function Settings() {
   const { api, snapshot, runAction } = useBridge();
@@ -58,9 +65,21 @@ export function Settings() {
   const running = snapshot?.status?.status === 'RUNNING';
 
   return (
-    <div className="settings">
-      <Card title="Project mặc định">
-        <p className="mono small">{view?.app.defaultProjectPath ?? 'Chưa đặt'}</p>
+    <div className="page settings">
+      <header className="page-head">
+        <div>
+          <h1>Settings</h1>
+          <p className="page-sub">Project, review rounds and run configuration.</p>
+        </div>
+      </header>
+
+      <Card title="Project">
+        <dl className="kv">
+          <dt>Open project</dt>
+          <dd className="mono small">{projectPath ?? 'Chưa chọn'}</dd>
+          <dt>Default project</dt>
+          <dd className="mono small">{view?.app.defaultProjectPath ?? 'Chưa đặt'}</dd>
+        </dl>
         <div className="row-actions">
           <button type="button" className="btn" disabled={!projectPath} onClick={() => setDefault(false)}>
             Đặt project hiện tại làm mặc định
@@ -72,7 +91,7 @@ export function Settings() {
         <p className="hint">Khi mở app, project mặc định được mở và Core kiểm tra session dở dang (recovery).</p>
       </Card>
 
-      <Card title="Cấu hình project (.ai-bridge/config.json)">
+      <Card title="Run configuration (.ai-bridge/config.json)">
         {!project && <EmptyState title="Chưa chọn project" />}
         {project && (
           <form onSubmit={(e) => void save(e)} className="config-form">
@@ -81,15 +100,20 @@ export function Settings() {
               {project.exists ? '' : ' (chưa có file — đang dùng mặc định của Core)'}
             </p>
             {project.errors.length > 0 && <p className="warn">File hiện tại không hợp lệ: {project.errors.join('; ')}</p>}
+            <h3 className="form-section">Review rounds &amp; timeouts</h3>
             <div className="field-grid">
               {NUMBER_FIELDS.map((f) => (
                 <label key={f.key} className="field">
                   <span>{f.label}</span>
                   <input type="number" value={String(draft[f.key] ?? '')} onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))} />
-                  <small className="hint">{f.hint}</small>
+                  <small className="hint">
+                    {f.hint}
+                    {f.minutes && minutesOf(draft[f.key]) ? ` · hiện tại ${minutesOf(draft[f.key])}` : ''}
+                  </small>
                 </label>
               ))}
             </div>
+            <h3 className="form-section">Safety checks before each run</h3>
             {BOOLEAN_FIELDS.map((f) => (
               <label key={f.key} className="check">
                 <input type="checkbox" checked={draft[f.key] === true} onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.checked }))} />
@@ -104,20 +128,6 @@ export function Settings() {
             </div>
           </form>
         )}
-      </Card>
-
-      <Card title="Logs">
-        <p>
-          Core ghi <span className="mono">.ai-bridge/logs/events.jsonl</span> và <span className="mono">ai-bridge.log</span> trong project, tự xoay vòng khi vượt {formatBytes(view?.logs.maxFileBytes ?? 0)}. Không
-          cấu hình được (quy tắc của Core).
-        </p>
-      </Card>
-
-      <Card title="Bảo mật & chi phí">
-        <p>
-          AI Bridge dùng Claude CLI và Codex CLI với đăng nhập sẵn có của bạn. Ứng dụng không hỏi, không lưu API key, token, mật khẩu hay credential nào, và không gửi dữ liệu ra ngoài (không
-          telemetry). Chi phí bổ sung: $0.
-        </p>
       </Card>
     </div>
   );

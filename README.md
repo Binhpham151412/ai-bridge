@@ -219,26 +219,33 @@ pnpm desktop          # dev build + launch
 pnpm package:win      # portable build → release/AI Bridge-win32-x64/AI Bridge.exe (+ .zip)
 ```
 
-Pick a project folder (native picker), open **System check** (Core's `doctor`), then
-**START** with a task and max iterations. Dashboard shows Core's live state, iteration,
-Claude/Codex activity, the activity log and the current session's artifacts (report,
-Codex response, the exact prompt sent to Claude, events, state — read-only). **PAUSE** is
+The app has five screens: **Run** (what is happening now), **Journal** (round-by-round
+history), **Artifacts** (every file a session produced), **Settings** (project + run
+configuration) and **System** (Core's `doctor`, runtime, logs). Pick a project folder
+(native picker), check **System**, then **START** on **Run** with a task and the maximum
+review rounds. Run shows Core's status, the round, one plain sentence derived from Core's
+phase, what Claude and ChatGPT/Codex are each doing, and a milestone activity feed; the raw
+detail (Core state, ids, PIDs, execution records, stdout/stderr, the full event log) is in
+the collapsed **Technical details** / **Technical output** sections. **PAUSE** is
 cooperative, **STOP** goes through Core's process management, and after a crash or restart
 the app shows **RESUME/DISCARD** only when Core says the session is recoverable. Same $0
-model as the CLI: no API keys, no network calls of its own, no telemetry.
+model as the CLI: no API keys, no network calls of its own, no telemetry. See
+[docs/15-ui-ux-refactor-report.md](docs/15-ui-ux-refactor-report.md).
 
 Since M4.1 every Claude/Codex call is traceable in the app: the AI Bridge session, the
 Claude CLI session and the Codex thread are shown separately; each call's exact prompt
 (SHA-256, bytes), PID, start/end, exit code, stdin delivery and CLI output/stderr are in
-the **CLAUDE/CODEX EXECUTION** tabs, and **Sessions** shows a per-iteration trace. See
+its execution record (Run → Technical details for the current round, Artifacts →
+Technical for every round), and Artifacts → Technical → Execution trace shows a
+per-iteration trace. See
 [docs/12-m4.1-session-execution-transparency-report.md](docs/12-m4.1-session-execution-transparency-report.md).
 
 Since M4.2, **START** also lets you pick the maximum number of review rounds (a preset
 select — 1/2/3/5/10/20/30/50/Custom…, capped at 100 — the run still stops earlier the
-moment the reviewer returns DONE), and each session's Artifacts panel has a **JOURNAL**
-tab: a per-round Claude report and ChatGPT review in plain Markdown (lazy-loaded one at a
-time), a session index, and a whole-session final report once the run ends. The
-**CHATGPT RESPONSE** tab now distinguishes Raw / Review (human-readable) / Next Prompt.
+moment the reviewer returns DONE), and **Journal** shows each session's Development
+Journal: per round the Claude prompt, Claude report, ChatGPT review (human-readable), next
+prompt and raw response (lazy-loaded one at a time), a session index, and a whole-session
+final report once the run ends.
 See [docs/13-m4.2-development-journal.md](docs/13-m4.2-development-journal.md).
 
 ## Known limitations

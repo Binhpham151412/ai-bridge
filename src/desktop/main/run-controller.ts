@@ -399,7 +399,7 @@ export class RunController {
       this.lastError = redactUiError({
         code: 'CORE_PROCESS_EXITED',
         title: 'Core process kết thúc bất thường',
-        message: 'Tiến trình chạy BridgeEngine đã dừng trước khi báo kết quả. Xem trạng thái recovery trên Dashboard.',
+        message: 'Tiến trình chạy BridgeEngine đã dừng trước khi báo kết quả. Xem trạng thái recovery trên màn hình Run.',
         details: `exit code: ${exit.code ?? 'null'}, signal: ${exit.signal ?? 'null'}${exit.stderrTail ? `\n${exit.stderrTail}` : ''}`,
       });
     }

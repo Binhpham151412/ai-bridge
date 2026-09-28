@@ -1,9 +1,8 @@
 import { useState } from 'react';
-import type { ArtifactText, ExecutionOutput, ExecutionView } from '../../../core/session-history/session-history.ts';
-import type { UiError } from '../../shared/ipc-contract.ts';
-import { useBridge } from '../state/BridgeProvider.tsx';
-import { formatBytes, formatElapsed, formatTime } from '../lib/format.ts';
-import { EmptyState, ErrorPanel, Pill } from './common.tsx';
+import type { ArtifactText, ExecutionView } from '../../../core/session-history/session-history.ts';
+import { formatElapsed, formatTime } from '../lib/format.ts';
+import { CliOutput } from './CliOutput.tsx';
+import { EmptyState, Pill } from './common.tsx';
 
 type Check = 'ok' | 'fail' | 'unknown' | 'pending';
 
@@ -56,11 +55,10 @@ export function ExecutionPanel({
   execution: ExecutionView | null;
   inputArtifact: ArtifactText | null;
   isLiveStep: boolean;
-  onViewInput: () => void;
+  /** Opens the exact prompt/input this call received (omitted where it is shown alongside). */
+  onViewInput?: () => void;
 }) {
-  const { api } = useBridge();
-  const [output, setOutput] = useState<{ stream: 'stdout' | 'stderr'; data: ExecutionOutput } | null>(null);
-  const [outputError, setOutputError] = useState<UiError | null>(null);
+  const [outputStream, setOutputStream] = useState<'stdout' | 'stderr' | null>(null);
   const name = agent === 'claude' ? 'Claude' : 'Codex';
 
   if (!execution) {
@@ -75,16 +73,6 @@ export function ExecutionPanel({
 
   const { record, effectiveStatus } = execution;
   const running = effectiveStatus === 'RUNNING';
-  const load = async (stream: 'stdout' | 'stderr') => {
-    const res = await api.getExecutionOutput({ runId, iteration, agent, stream });
-    if (res.ok) {
-      setOutput({ stream, data: res.data });
-      setOutputError(null);
-    } else {
-      setOutput(null);
-      setOutputError(res.error);
-    }
-  };
 
   const inputMatches = inputArtifact !== null && inputArtifact.sha256 === record.input.sha256;
   let deliveryState: Check = 'unknown';
@@ -180,29 +168,20 @@ export function ExecutionPanel({
       )}
 
       <div className="row-actions">
-        <button type="button" className="btn btn-small" onClick={onViewInput}>
-          {agent === 'claude' ? 'VIEW EXACT PROMPT' : 'VIEW INPUT'}
-        </button>
-        <button type="button" className="btn btn-small" onClick={() => void load('stdout')} disabled={running} data-testid="exec-view-stdout">
+        {onViewInput && (
+          <button type="button" className="btn btn-small" onClick={onViewInput}>
+            {agent === 'claude' ? 'VIEW EXACT PROMPT' : 'VIEW INPUT'}
+          </button>
+        )}
+        <button type="button" className="btn btn-small" onClick={() => setOutputStream('stdout')} disabled={running} data-testid="exec-view-stdout">
           VIEW CLI OUTPUT
         </button>
-        <button type="button" className="btn btn-small" onClick={() => void load('stderr')} disabled={running} data-testid="exec-view-stderr">
+        <button type="button" className="btn btn-small" onClick={() => setOutputStream('stderr')} disabled={running} data-testid="exec-view-stderr">
           VIEW STDERR
         </button>
       </div>
       {running && <p className="hint">CLI output được lưu khi process kết thúc.</p>}
-      {outputError && <ErrorPanel error={outputError} />}
-      {output && (
-        <>
-          <p className="artifact-meta mono">
-            {output.stream === 'stdout' ? 'CLI output (stdout — luồng event của CLI, không phải transcript hội thoại)' : 'stderr'} · {formatBytes(output.data.bytes)}
-            {output.data.truncated ? ' · chỉ hiển thị phần cuối (256 KB)' : ''} · đã che thông tin nhạy cảm
-          </p>
-          <pre className="raw exec-output" data-testid="exec-output">
-            {output.data.text === '' ? '(trống)' : output.data.text}
-          </pre>
-        </>
-      )}
+      {outputStream && <CliOutput key={outputStream} runId={runId} iteration={iteration} agent={agent} initialStream={outputStream} />}
       {agent === 'claude' && <p className="hint">AI Bridge sử dụng Claude Code CLI trực tiếp. Danh sách hội thoại của Claude Desktop không phải là nguồn trạng thái của AI Bridge.</p>}
     </div>
   );

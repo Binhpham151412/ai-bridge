@@ -23,7 +23,9 @@ function buttons(container: HTMLElement) {
 
 const byText = (root: ParentNode, selector: string, text: string) => [...root.querySelectorAll(selector)].find((el) => el.textContent === text);
 
-test('renders Core status, phase, iteration x / max, session and agent activity straight from the snapshot', async () => {
+const round = (container: HTMLElement) => q(container, 'iteration')!.textContent!.replace(/\s/g, '');
+
+test('renders Core status, round x / max, a plain activity sentence and both agents straight from the snapshot; phase + PID under Technical details', async () => {
   const { container, unmount } = await renderApp(
     makeSnapshot({
       runAttached: true,
@@ -40,13 +42,18 @@ test('renders Core status, phase, iteration x / max, session and agent activity 
     }),
   );
   try {
-    assert.match(q(container, 'run-status')!.textContent!, /RUNNING/);
-    assert.equal(q(container, 'run-phase')!.textContent, 'CLAUDE_EXECUTING');
-    assert.equal(q(container, 'iteration')!.textContent!.replace(/\s/g, ''), '3/10');
-    assert.match(q(container, 'agent-claude')!.textContent!, /EXECUTING.*pid 4242/);
-    assert.match(q(container, 'agent-codex')!.textContent!, /WAITING/);
-    assert.match(q(container, 'header')!.textContent!, /demo.*2026-09-26_001.*RUNNING/);
+    assert.match(q(container, 'run-status')!.textContent!, /Running/);
+    assert.equal(q(container, 'run-status')!.querySelector('.pill')!.getAttribute('title'), 'Core status: RUNNING');
+    assert.equal(round(container), 'Round3/10');
+    assert.equal(q(container, 'run-activity')!.textContent, 'Claude is working on the changes ChatGPT requested in round 2.');
+    assert.match(q(container, 'agent-claude')!.textContent!, /Claude.*Working.*Working on round 3/);
+    assert.match(q(container, 'agent-codex')!.textContent!, /ChatGPT \/ Codex.*Waiting.*Waiting for Claude's report/);
+    assert.doesNotMatch(q(container, 'run-hero')!.textContent!, /4242|CLAUDE_EXECUTING/, 'raw PID/phase do not dominate the RUN screen');
+    assert.match(q(container, 'header')!.textContent!, /demo.*2026-09-26_001.*Running/);
     assert.match(q(container, 'elapsed')!.textContent!, /^\d\d:\d\d:\d\d$/);
+    await click(q(container, 'tech-details-toggle'));
+    assert.equal(q(container, 'run-phase')!.textContent, 'CLAUDE_EXECUTING');
+    assert.equal(q(container, 'claude-pid')!.textContent, '4242');
   } finally {
     await unmount();
   }
@@ -76,14 +83,18 @@ test('buttons follow snapshot.controls exactly (IDLE / RUNNING / PAUSED / ERROR)
   }
 });
 
-test('a pushed snapshot updates iteration and phase live; clicking PAUSE invokes bridge:pause once', async () => {
+test('a pushed snapshot updates round, activity and phase live; clicking PAUSE invokes bridge:pause once', async () => {
   const running = makeSnapshot({ status: { status: 'RUNNING', iteration: 1, maxIterations: 5 }, controls: { canStart: false, canPause: true, canResume: false, stopMode: 'STOP' } });
   const { main, container, unmount } = await renderApp(running);
   try {
-    assert.equal(q(container, 'iteration')!.textContent!.replace(/\s/g, ''), '1/5');
-    main.pushSnapshot(makeSnapshot({ controls: running.controls, status: { status: 'RUNNING', iteration: 2, maxIterations: 5, currentPhase: 'CODEX_REVIEWING' } }));
+    assert.equal(round(container), 'Round1/5');
+    await click(q(container, 'tech-details-toggle'));
+    main.pushSnapshot(
+      makeSnapshot({ controls: running.controls, status: { status: 'RUNNING', iteration: 2, maxIterations: 5, currentPhase: 'CODEX_REVIEWING', activity: { claude: 'WAITING', codex: 'REVIEWING' } } }),
+    );
     await flush();
-    assert.equal(q(container, 'iteration')!.textContent!.replace(/\s/g, ''), '2/5');
+    assert.equal(round(container), 'Round2/5');
+    assert.equal(q(container, 'run-activity')!.textContent, "ChatGPT is reviewing Claude's report.");
     assert.equal(q(container, 'run-phase')!.textContent, 'CODEX_REVIEWING');
     await click(q(container, 'btn-pause'));
     assert.equal(main.invoked.filter((c) => c.channel === 'bridge:pause').length, 1);
@@ -163,7 +174,7 @@ test('recovery banner: RECOVERABLE offers RESUME + DISCARD; BLOCKED shows "RECOV
   }
 });
 
-test("session history lists Core sessions and opens a session's artifacts (rendered report, exact prompt, state)", async () => {
+test("ARTIFACTS lists Core sessions and opens a session's files (rendered report, exact prompt, state)", async () => {
   const { main, container, unmount } = await renderApp(makeSnapshot({ status: { status: 'DONE', iteration: 1 } }));
   main.handlers.set('bridge:listSessions', () => ({
     ok: true,
@@ -189,19 +200,21 @@ test("session history lists Core sessions and opens a session's artifacts (rende
       state: { runId: '2026-09-26_001', status: 'DONE' },
     },
   }));
+  const file = (root: ParentNode, key: string) => root.querySelector(`[data-testid="artifact-item"][data-key="${key}"]`);
   try {
-    await click(q(container, 'nav-sessions'));
-    const rows = qa(container, 'session-row');
-    assert.equal(rows.length, 1);
-    assert.match(rows[0].textContent!, /2026-09-26_001.*demo.*DONE.*1/);
-    await click(rows[0]);
-    const history = container.querySelector('.history-artifacts')!;
-    assert.ok(history.querySelector('.markdown strong'), 'report rendered as markdown');
-    assert.match(history.textContent!, /hash verified/);
-    await click(byText(history, '[role="tab"]', 'PROMPT'));
-    assert.equal(q(history, 'artifact-prompt')!.textContent, 'Create src/sum.js exactly');
-    await click(byText(history, '[role="tab"]', 'STATE'));
-    assert.match(q(history, 'artifact-state')!.textContent!, /"status": "DONE"/);
+    await click(q(container, 'nav-artifacts'));
+    const options = [...(q(container, 'session-select') as HTMLSelectElement).options];
+    assert.deepEqual(
+      options.map((o) => o.textContent),
+      ['2026-09-26_001 · Completed · 1 round · current'],
+    );
+    const view = q(container, 'artifact-view')!;
+    assert.ok(view.querySelector('.markdown strong'), 'the latest report opens by default, rendered as markdown');
+    assert.match(view.textContent!, /hash verified/);
+    await click(file(container, 'prompt:1'));
+    assert.equal(q(container, 'artifact-prompt')!.textContent, 'Create src/sum.js exactly');
+    await click(file(container, 'state'));
+    assert.match(q(container, 'artifact-state')!.textContent!, /"status": "DONE"/);
   } finally {
     await unmount();
   }

@@ -4,3 +4,5 @@ sandbox/
 dist-desktop/
 release/
 release-*/
+
+graphify-out/

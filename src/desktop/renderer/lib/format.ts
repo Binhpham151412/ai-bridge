@@ -24,6 +24,12 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Last path segment of a Windows or POSIX path (display only). */
+export function basename(p: string): string {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+
 /** Visual tone for a Core status string — presentation only. */
 export type Tone = 'idle' | 'active' | 'paused' | 'success' | 'danger' | 'warning';
 
