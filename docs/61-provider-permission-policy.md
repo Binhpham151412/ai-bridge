@@ -208,3 +208,32 @@ renderer never imports an adapter or spawns a provider (tested).
 - A per-step workflow override: the contract already carries `permissionPolicy`; only the workflow
   definition/step-planner would need to set it (not done — out of scope, no schema change).
 - Runtime capability detection (parsing `--help` during doctor) to replace the static declaration.
+
+## 13. "Approve (bypass) & retry step" (workflow human answer `approve-bypass`)
+
+The human-approval path for a workflow step that stopped because the provider asked for a human.
+
+- **When it is offered:** only when an attempt ended with the provider's own `NEED_HUMAN` (wait
+  reason `HUMAN_REQUESTED`) and the step has not already had a bypass re-run. It is **not** offered
+  for quota limits, invalid responses or other waits — bypassing permissions cannot fix those.
+- **What it does:** the decider records `HUMAN_INPUT_RECEIVED {answer: "approve-bypass"}`, sets the
+  workflow back to `RUNNING`, and plans a **new attempt** of the same step (`<workflowId>/<step>/2`,
+  new execution, new Claude/Codex sessions) with `permissionPolicy: "bypass"` on the attempt, on
+  `ATTEMPT_PLANNED`, on the `START_EXECUTION` command and on the `ExecutionRequest`. The earlier
+  attempt stays `NEEDS_HUMAN` as history. Every execution record of the re-run shows
+  `requested: bypass, source: execution-override`.
+- **Once per step:** if the bypass re-run needs a human again, only `fail` / `stop` are offered.
+- **Budgets:** the human's approval authorizes that one extra execution — it is not counted against
+  the definition's executions budget (so it never starves a later step). Deadline, iteration and
+  token budgets still apply.
+- **Replay/recovery:** the answer is an ordinary logged input, so replaying the event log reproduces
+  the new attempt exactly; a crash while it launches is reconciled like any other attempt.
+- **UI:** Workflows → the "waiting for you" banner shows **Approve (bypass) & retry step** next to
+  FAIL/STOP, with a confirmation explaining that the step re-runs as a new attempt with bypass.
+  Validated in Main (`workflow:answer` accepts `fail | stop | approve-bypass`) and by the Workflow
+  Host (`canAnswer`).
+- **Scope note:** this is a deliberate, narrow exception to the M5 rule "one attempt per step"
+  (ADR-020): it happens only on an explicit human answer. The general M6 `retry` answer is still
+  `NOT_IN_M5`, and `retry.maxAttempts` in definitions is still fixed at 1.
+- **Not covered:** a plain Run (desktop Run view / CLI, outside workflows) that ends `NEED_HUMAN`
+  has no such button — start a new run (the project default is already bypass).

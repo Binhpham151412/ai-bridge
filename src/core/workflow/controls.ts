@@ -26,8 +26,9 @@ export interface WorkflowControls {
 
 const NONE: WorkflowControls = { canStart: false, canPause: false, canResume: false, canStop: false, canAnswer: [] };
 
-/** Answers the M5 decider accepts; `retry` (M6) and `resume-execution` (M5.6) are not offered. */
-const M5_ANSWERS = ['fail', 'stop'];
+/** Answers the M5 decider accepts; `retry` (M6) and `resume-execution` (M5.6) are not offered.
+ * `approve-bypass` (M5.10.1) appears only when the decider offered it (NEED_HUMAN, once per step). */
+const M5_ANSWERS = ['fail', 'stop', 'approve-bypass'];
 
 export function deriveWorkflowControls(instance: WorkflowInstance, context: { hostAlive: boolean }): WorkflowControls {
   const display = deriveWorkflowDisplayState(instance, context.hostAlive);

@@ -136,6 +136,33 @@ test('unknown error codes never complete a step: NEEDS_HUMAN → WAITING_HUMAN; 
     await engine.close();
   }));
 
+test('M5.10.1 approve-bypass: the provider asked for a human → the step re-runs as attempt 2 with ExecutionRequest.permissionPolicy = bypass', () =>
+  withProject(async (dir) => {
+    const port = new FakeExecutionPort();
+    port.behave = async (call, n) => {
+      const runId = `2026-10-01_00${n + 1}`;
+      call.emit({ event: 'RUN_STARTED', runId, iteration: 0, correlation: call.request?.attemptId });
+      return { kind: 'ENDED', executionId: runId, finalStatus: n === 0 ? 'NEED_HUMAN' : 'DONE', errorCode: null, iterations: 1, reportedTokens: 5, usageLimitDetected: false };
+    };
+    const engine = await create(dir, port, raw(['build']));
+    await run(engine);
+    assert.equal(engine.instance.state, 'WAITING_HUMAN');
+    assert.ok(engine.instance.waitingFor?.options.includes('approve-bypass'));
+    const r = await engine.answer('approve-bypass');
+    assert.equal(r.accepted, true);
+    await engine.idle();
+    assert.equal(engine.instance.state, 'COMPLETED');
+    assert.equal(port.starts.length, 2);
+    assert.equal('permissionPolicy' in port.starts[0], false, 'the first run inherits the project setting');
+    assert.equal(port.starts[1].permissionPolicy, 'bypass');
+    assert.ok(port.starts[1].attemptId.endsWith('/build/2'));
+    const inst = engine.instance;
+    const reloaded = await new WorkflowStore(dir).load(engine.workflowId);
+    assert.equal(reloaded.ok && canonicalJson(reloaded.handle.instance), canonicalJson(inst), 'reconstructable from the log');
+    assert.deepEqual(engine.errors, []);
+    await engine.close();
+  }));
+
 test('a refused start is BLOCKED without consuming the attempt; resume relaunches the SAME attempt', () =>
   withProject(async (dir) => {
     const port = new FakeExecutionPort();

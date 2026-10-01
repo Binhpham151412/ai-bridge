@@ -71,11 +71,22 @@ export type StartBudgetCheck =
  * Relaunching a NOT_STARTED attempt uses the same check: NOT_STARTED attempts are not
  * counted as executions (workflowUsage), so a refused start never consumes budget.
  */
-export function checkStartBudget(definition: WorkflowDefinition, instance: WorkflowInstance, step: WorkflowStepDefinition, at: string): StartBudgetCheck {
+export function checkStartBudget(
+  definition: WorkflowDefinition,
+  instance: WorkflowInstance,
+  step: WorkflowStepDefinition,
+  at: string,
+  /** M5.10.1: a human's `approve-bypass` authorizes exactly one extra execution of the step it
+   * answered — the executions count is not checked for it; deadline/iterations/tokens are. */
+  opts: { humanApprovedExtraExecution?: boolean } = {},
+): StartBudgetCheck {
   const budgets = effectiveBudgets(definition);
   const usage = workflowUsage(instance);
   if (deadlineExceeded(definition, instance, at)) return { ok: false, reason: 'DEADLINE_EXCEEDED' };
-  if (usage.executions >= budgets.maxExecutions) return { ok: false, reason: 'BUDGET_EXECUTIONS_EXHAUSTED' };
+  // Human-approved bypass re-runs were authorized by the human, not drawn from the definition's
+  // executions budget — so they never use up a later step's execution either.
+  const approved = instance.steps.flatMap((s) => s.attempts).filter((a) => a.permissionPolicy === 'bypass' && consumesExecution(a)).length;
+  if (!opts.humanApprovedExtraExecution && usage.executions - approved >= budgets.maxExecutions) return { ok: false, reason: 'BUDGET_EXECUTIONS_EXHAUSTED' };
   const remaining = budgets.maxTotalIterations - usage.iterations;
   if (remaining < 1) return { ok: false, reason: 'BUDGET_ITERATIONS_EXHAUSTED' };
   if (budgets.maxReportedTokens !== null && usage.reportedTokens >= budgets.maxReportedTokens) return { ok: false, reason: 'BUDGET_TOKENS_EXHAUSTED' };

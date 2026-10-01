@@ -207,7 +207,8 @@ export interface WorkflowStartRequest {
 export interface WorkflowAnswerRequest {
   workflowId: string;
   /** The HUMAN_ANSWER values M5 accepts. */
-  answer: 'fail' | 'stop';
+  /** `approve-bypass` (M5.10.1): re-run the step that asked for a human with permission bypass. */
+  answer: 'fail' | 'stop' | 'approve-bypass';
 }
 
 export interface InvokeContract {
@@ -376,7 +377,7 @@ export const MAX_WORKFLOW_EVENTS = 1000;
 export const MAX_WORKFLOW_INPUTS = 64;
 /** Same cap as Core's WORKFLOW_LIMITS.maxTextBytes. */
 export const MAX_WORKFLOW_INPUT_LENGTH = 256 * 1024;
-const WORKFLOW_ANSWERS: readonly string[] = ['fail', 'stop'];
+const WORKFLOW_ANSWERS: readonly string[] = ['fail', 'stop', 'approve-bypass'];
 
 const isKebabId = (v: unknown): v is string => typeof v === 'string' && v.length <= MAX_ID_LENGTH && KEBAB_ID.test(v);
 

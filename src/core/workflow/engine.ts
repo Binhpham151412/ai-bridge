@@ -130,7 +130,7 @@ export class WorkflowEngine {
   stop(cause: 'USER' | 'DEADLINE' = 'USER') {
     return this.submit({ type: 'STOP_REQUESTED', cause });
   }
-  answer(answer: 'fail' | 'stop' | 'retry' | 'resume-execution') {
+  answer(answer: 'fail' | 'stop' | 'retry' | 'resume-execution' | 'approve-bypass') {
     return this.submit({ type: 'HUMAN_ANSWER', answer });
   }
 
@@ -190,7 +190,7 @@ export class WorkflowEngine {
     if (this.#disposed) return;
     switch (command.type) {
       case 'START_EXECUTION':
-        return this.#track(this.#launch(command.attemptId, command.stepId, command.maxIterations));
+        return this.#track(this.#launch(command.attemptId, command.stepId, command.maxIterations, command.permissionPolicy));
       case 'RESUME_EXECUTION':
         return this.#track(this.#execute(command.attemptId, (onEvent, onSpawn) => this.#deps.port.resume({ executionId: command.executionId }, onEvent, onSpawn)));
       case 'VERIFY':
@@ -211,12 +211,14 @@ export class WorkflowEngine {
     return null;
   }
 
-  async #launch(attemptId: string, stepId: string, maxIterations: number): Promise<void> {
+  async #launch(attemptId: string, stepId: string, maxIterations: number, permissionPolicy?: 'bypass'): Promise<void> {
     const attempt = this.#attempt(attemptId);
     if (!attempt) return;
     const planned = renderTask(this.#handle.definition, this.#handle.instance.inputs, stepId, await this.#stepOutputs(stepId));
     await this.#deps.store.writeAttemptTask(this.#handle, attempt, planned.task);
-    await this.#execute(attemptId, (onEvent, onSpawn) => this.#deps.port.start({ attemptId, task: planned.task, maxIterations }, onEvent, onSpawn));
+    // M5.10.1: omitted = inherit the project's provider setting; `bypass` only after approve-bypass.
+    const request = { attemptId, task: planned.task, maxIterations, ...(permissionPolicy !== undefined ? { permissionPolicy } : {}) };
+    await this.#execute(attemptId, (onEvent, onSpawn) => this.#deps.port.start(request, onEvent, onSpawn));
   }
 
   /** Runs one ExecutionPort call and feeds its lifecycle back as inputs, in order. */

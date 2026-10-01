@@ -52,6 +52,7 @@ test('valid workflow payloads pass unchanged', () => {
     ['workflow:start', { definitionId: 'host-flow', definitionHash: HASH, inputs: { feature: 'x', 'extra-notes': '' } }],
     ['workflow:answer', { workflowId: WF, answer: 'fail' }],
     ['workflow:answer', { workflowId: WF, answer: 'stop' }],
+    ['workflow:answer', { workflowId: WF, answer: 'approve-bypass' }],
   ];
   for (const [channel, payload] of valid) {
     const v = validateRequest(channel, payload);

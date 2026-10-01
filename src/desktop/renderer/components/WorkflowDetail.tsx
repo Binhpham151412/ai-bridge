@@ -70,9 +70,13 @@ function WaitingHuman({ snapshot, pendingAction, act }: { snapshot: WorkflowSnap
   const attempt = snapshot.steps.flatMap((s) => (s.current ? [{ step: s, attempt: s.current }] : [])).find((x) => x.attempt.attemptId === waiting.attemptId);
   const answers = snapshot.controls.canAnswer;
   const answer = (a: string) => {
-    if (!window.confirm(`${answerLabel(a)}? Workflow ${snapshot.workflowId} sẽ kết thúc.`)) return;
+    const question =
+      a === 'approve-bypass'
+        ? `${answerLabel(a)}?\n\nStep này sẽ chạy lại thành một attempt MỚI (execution và session CLI mới) với permission policy = bypass: Claude/Codex được thực thi lệnh, mở server, truy cập localhost/trình duyệt mà không hỏi lại. Chỉ được duyệt 1 lần cho mỗi step.`
+        : `${answerLabel(a)}? Workflow ${snapshot.workflowId} sẽ kết thúc.`;
+    if (!window.confirm(question)) return;
     // The IPC contract accepts the M5 answers only; Main validates, Core decides.
-    void act(() => api.workflowAnswer({ workflowId: snapshot.workflowId, answer: a as 'fail' | 'stop' }));
+    void act(() => api.workflowAnswer({ workflowId: snapshot.workflowId, answer: a as 'fail' | 'stop' | 'approve-bypass' }));
   };
   return (
     <section className="banner banner-human" aria-label="Workflow cần bạn quyết định" data-testid="wf-waiting">
@@ -96,7 +100,14 @@ function WaitingHuman({ snapshot, pendingAction, act }: { snapshot: WorkflowSnap
       </div>
       <div className="banner-actions">
         {answers.map((a) => (
-          <button key={a} type="button" className={a === 'stop' ? 'btn btn-danger' : 'btn'} disabled={pendingAction !== null} onClick={() => answer(a)} data-testid={`wf-answer-${a}`}>
+          <button
+            key={a}
+            type="button"
+            className={a === 'stop' ? 'btn btn-danger' : a === 'approve-bypass' ? 'btn btn-primary' : 'btn'}
+            disabled={pendingAction !== null}
+            onClick={() => answer(a)}
+            data-testid={`wf-answer-${a}`}
+          >
             {answerLabel(a)}
           </button>
         ))}

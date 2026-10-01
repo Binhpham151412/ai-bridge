@@ -48,6 +48,7 @@ export type WorkflowDecision =
 type Rejection = { code: 'NOT_ALLOWED' | 'UNKNOWN_ATTEMPT' | 'NOT_IN_M5'; reason: string };
 
 const HUMAN_OPTIONS = ['fail', 'stop'];
+const APPROVE_BYPASS = 'approve-bypass';
 const ENVIRONMENT_OPTIONS = ['resume', 'stop'];
 
 // ---------------------------------------------------------------------------
@@ -228,6 +229,7 @@ function apply(d: Draft, input: WorkflowInput): Rejection | null {
       if (inst.state !== 'WAITING_HUMAN') return notAllowed(`no decision is pending (state ${inst.state})`);
       if (input.answer === 'retry') return { code: 'NOT_IN_M5', reason: 'retries belong to M6; in M5 a step runs exactly once' };
       if (input.answer === 'resume-execution') return { code: 'NOT_IN_M5', reason: 'resuming an execution from WAITING_HUMAN needs the reconciler (M5.6)' };
+      if (input.answer === 'approve-bypass') return approveBypass(d);
       d.emit('HUMAN_INPUT_RECEIVED', 'human', { attemptId: inst.waitingFor?.attemptId ?? null, payload: { answer: input.answer } });
       if (input.answer === 'stop') {
         inst.stopRequested = 'USER';
@@ -443,7 +445,7 @@ function boundary(d: Draft): void {
   startAttempt(d, next, budget);
 }
 
-function startAttempt(d: Draft, stepIndex: number, budget: Extract<StartBudgetCheck, { ok: true }>): void {
+function startAttempt(d: Draft, stepIndex: number, budget: Extract<StartBudgetCheck, { ok: true }>, permissionPolicy?: 'bypass'): void {
   const step = d.inst.steps[stepIndex];
   if (step.state === 'PENDING') d.setStep(step, 'ACTIVE');
   const attemptNo = step.attempts.length + 1;
@@ -466,10 +468,38 @@ function startAttempt(d: Draft, stepIndex: number, budget: Extract<StartBudgetCh
     lastOutcome: null,
     verification: null,
     stopCause: null,
+    ...(permissionPolicy !== undefined ? { permissionPolicy } : {}),
   };
   step.attempts.push(att);
-  d.emit('ATTEMPT_PLANNED', 'workflow-engine', { attempt: att, payload: { attemptNo, maxIterations: att.maxIterations, maxIterationsClamped: att.maxIterationsClamped } });
+  d.emit('ATTEMPT_PLANNED', 'workflow-engine', {
+    attempt: att,
+    payload: { attemptNo, maxIterations: att.maxIterations, maxIterationsClamped: att.maxIterationsClamped, ...(permissionPolicy !== undefined ? { permissionPolicy } : {}) },
+  });
   launch(d, att);
+}
+
+/**
+ * M5.10.1 (docs/61 §13): the provider asked for a human (NEED_HUMAN) — typically a permission
+ * it could not get headless. The human approves: the same step runs again as a NEW attempt
+ * (new execution, new CLI sessions) with permission policy `bypass`. Offered once per step;
+ * this is not the M6 retry (`retry` stays NOT_IN_M5).
+ */
+function approveBypass(d: Draft): Rejection | null {
+  const inst = d.inst;
+  if (!inst.waitingFor?.options.includes(APPROVE_BYPASS)) return notAllowed('approve-bypass is offered only when the provider asked for a human, once per step');
+  const step = d.activeStep();
+  if (!step) return notAllowed('no active step to run again');
+  d.emit('HUMAN_INPUT_RECEIVED', 'human', { attemptId: inst.waitingFor.attemptId, payload: { answer: APPROVE_BYPASS } });
+  inst.waitingFor = null;
+  const budget = checkStartBudget(d.def, inst, d.stepDef(step), d.at, { humanApprovedExtraExecution: true });
+  if (!budget.ok) {
+    failStep(d, step, budget.reason);
+    finish(d, 'FAILED', budget.reason);
+    return null;
+  }
+  d.setInstance('RUNNING');
+  startAttempt(d, inst.steps.indexOf(step), budget, 'bypass');
+  return null;
 }
 
 /** Write-ahead: the attempt is LAUNCHING in the persisted snapshot before the engine shell
@@ -479,7 +509,13 @@ function launch(d: Draft, att: WorkflowAttempt): void {
   att.launchedAt = d.at;
   att.launches += 1;
   d.emit('ATTEMPT_LAUNCHING', 'workflow-engine', { attempt: att, payload: { launch: att.launches, maxIterations: att.maxIterations } });
-  d.commands.push({ type: 'START_EXECUTION', attemptId: att.attemptId, stepId: att.stepId, maxIterations: att.maxIterations });
+  d.commands.push({
+    type: 'START_EXECUTION',
+    attemptId: att.attemptId,
+    stepId: att.stepId,
+    maxIterations: att.maxIterations,
+    ...(att.permissionPolicy !== undefined ? { permissionPolicy: att.permissionPolicy } : {}),
+  });
 }
 
 function link(d: Draft, att: WorkflowAttempt, executionId: string): void {
@@ -509,9 +545,12 @@ function failStep(d: Draft, step: WorkflowStepRuntime, reason: WorkflowTerminalR
 }
 
 function waitForHuman(d: Draft, reason: string, att: WorkflowAttempt): void {
-  d.inst.waitingFor = { kind: 'HUMAN', reason, attemptId: att.attemptId, options: [...HUMAN_OPTIONS] };
+  // M5.10.1: when the provider itself asked for a human, offer one bypass re-run of the step.
+  const bypassOffered = reason === 'HUMAN_REQUESTED' && !d.stepOf(att).attempts.some((a) => a.permissionPolicy === 'bypass');
+  const options = bypassOffered ? [...HUMAN_OPTIONS, APPROVE_BYPASS] : [...HUMAN_OPTIONS];
+  d.inst.waitingFor = { kind: 'HUMAN', reason, attemptId: att.attemptId, options };
   d.setInstance('WAITING_HUMAN', { reason });
-  d.emit('HUMAN_INPUT_REQUESTED', 'workflow-engine', { attempt: att, payload: { reason, options: [...HUMAN_OPTIONS] } });
+  d.emit('HUMAN_INPUT_REQUESTED', 'workflow-engine', { attempt: att, payload: { reason, options: [...options] } });
 }
 
 function block(d: Draft, reason: string, att: WorkflowAttempt): void {

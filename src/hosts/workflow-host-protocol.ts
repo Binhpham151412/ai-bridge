@@ -48,7 +48,7 @@ export interface WorkflowHostError {
 }
 
 /** HUMAN_ANSWER values the M5 decider accepts (controls.ts `M5_ANSWERS`). */
-export const WORKFLOW_ANSWERS = ['fail', 'stop'] as const;
+export const WORKFLOW_ANSWERS = ['fail', 'stop', 'approve-bypass'] as const;
 export type WorkflowAnswer = (typeof WORKFLOW_ANSWERS)[number];
 
 export const WORKFLOW_CONTROL_ACTIONS = ['pause', 'stop'] as const;

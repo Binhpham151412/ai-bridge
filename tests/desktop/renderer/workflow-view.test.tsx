@@ -318,6 +318,38 @@ test('WAITING_HUMAN: reason, Core’s recorded options, and answer buttons only 
   await unmount();
 });
 
+test('M5.10.1: NEED_HUMAN offers "Approve (bypass) & retry step" — confirmed first, then sent to Main as approve-bypass', async () => {
+  const waiting = snap({
+    state: 'WAITING_HUMAN',
+    displayState: 'WAITING_HUMAN',
+    host: { alive: false, pid: null },
+    steps: [snap().steps[0], { ...snap().steps[1], state: 'ACTIVE', current: { ...snap().steps[1].current!, state: 'NEEDS_HUMAN' } }],
+    waitingFor: { kind: 'HUMAN', reason: 'HUMAN_REQUESTED', attemptId: `${WF}/docs/1`, options: ['fail', 'stop', 'approve-bypass'] },
+    controls: { canStart: false, canPause: false, canResume: false, canStop: true, canAnswer: ['fail', 'stop', 'approve-bypass'] },
+  });
+  const { main, container, unmount } = await openWorkflows({ panel: panel({ workflow: waiting, attached: false }) }, (m) => m.handlers.set('workflow:answer', () => ({ ok: true })));
+  const w = window as unknown as { confirm: (m: string) => boolean };
+  const original = w.confirm;
+  const asked: string[] = [];
+  try {
+    const box = q(container, 'wf-waiting')!;
+    const button = q(box, 'wf-answer-approve-bypass')!;
+    assert.equal(text(button), 'Approve (bypass) & retry step');
+    // Declining the confirmation sends nothing.
+    w.confirm = (m) => (asked.push(m), false);
+    await click(button);
+    assert.deepEqual(invoked(main, 'workflow:answer'), []);
+    assert.match(asked[0], /attempt MỚI/);
+    assert.match(asked[0], /bypass/);
+    w.confirm = () => true;
+    await click(button);
+    assert.deepEqual(invoked(main, 'workflow:answer').map((c) => c.args), [[{ workflowId: WF, answer: 'approve-bypass' }]]);
+  } finally {
+    w.confirm = original;
+    await unmount();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // F. recovery
 // ---------------------------------------------------------------------------

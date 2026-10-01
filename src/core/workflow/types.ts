@@ -170,6 +170,9 @@ export interface WorkflowAttempt {
   /** M5.6: pid of the Execution Host last spawned for this attempt (for reconciliation after
    * a Workflow Host crash); absent until a host was spawned. */
   hostPid?: number | null;
+  /** M5.10.1: execution-level permission override. Absent = inherit the project setting;
+   * `bypass` only on an attempt a human approved with `approve-bypass`. */
+  permissionPolicy?: 'bypass';
 }
 
 /** M5.6: what the reconciler established about a live attempt after a restart / host failure
@@ -240,7 +243,9 @@ export type WorkflowInput =
   | { type: 'PAUSE_REQUESTED'; at: string }
   | { type: 'RESUME_REQUESTED'; at: string }
   | { type: 'STOP_REQUESTED'; at: string; cause: StopCause }
-  | { type: 'HUMAN_ANSWER'; at: string; answer: 'fail' | 'stop' | 'retry' | 'resume-execution' }
+  /** `approve-bypass` (M5.10.1, docs/61 §13): the human approves privileged actions for the
+   * step that asked for a human — one new attempt of that step with permission policy bypass. */
+  | { type: 'HUMAN_ANSWER'; at: string; answer: 'fail' | 'stop' | 'retry' | 'resume-execution' | 'approve-bypass' }
   /** M5.6: the Execution Host for the attempt's (re)launch was spawned with this pid. */
   | { type: 'EXECUTION_HOST_SPAWNED'; at: string; attemptId: string; hostPid: number }
   /** M5.6: the reconciler's finding for a live attempt. */
@@ -248,7 +253,7 @@ export type WorkflowInput =
 
 /** Side effects for the engine shell to carry out AFTER the decision is persisted. */
 export type WorkflowCommand =
-  | { type: 'START_EXECUTION'; attemptId: string; stepId: string; maxIterations: number }
+  | { type: 'START_EXECUTION'; attemptId: string; stepId: string; maxIterations: number; permissionPolicy?: 'bypass' }
   | { type: 'RESUME_EXECUTION'; attemptId: string; executionId: string }
   | { type: 'PAUSE_EXECUTION'; attemptId: string }
   | { type: 'STOP_EXECUTION'; attemptId: string }

@@ -196,6 +196,7 @@ export function waitingReasonText(reason: string | null | undefined): string {
 const ANSWER_LABEL: Record<string, string> = {
   fail: 'Đánh dấu FAILED',
   stop: 'STOP workflow',
+  'approve-bypass': 'Approve (bypass) & retry step',
 };
 
 export function answerLabel(answer: string): string {

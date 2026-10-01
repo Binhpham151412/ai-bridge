@@ -175,7 +175,7 @@ test('NEED_HUMAN → WAITING_HUMAN; "fail" → FAILED HUMAN_MARKED_FAILED', () =
   const s = startedSim();
   s.runExecution(ended(RUN1, 'NEED_HUMAN'), 2);
   assert.equal(s.instance.state, 'WAITING_HUMAN');
-  assert.deepEqual(s.instance.waitingFor, { kind: 'HUMAN', reason: 'HUMAN_REQUESTED', attemptId: `${WF}/build/1`, options: ['fail', 'stop'] });
+  assert.deepEqual(s.instance.waitingFor, { kind: 'HUMAN', reason: 'HUMAN_REQUESTED', attemptId: `${WF}/build/1`, options: ['fail', 'stop', 'approve-bypass'] });
   s.feed({ type: 'HUMAN_ANSWER', at: at(3), answer: 'fail' });
   assert.equal(s.instance.state, 'FAILED');
   assert.equal(s.instance.terminalReason, 'HUMAN_MARKED_FAILED');
@@ -194,6 +194,72 @@ test('WAITING_HUMAN: "stop" → STOPPED; "retry" (M6) and "resume-execution" (M5
   assert.equal(s.instance.state, 'STOPPED');
   assert.equal(s.instance.terminalReason, 'STOPPED_BY_USER');
   assert.equal(s.instance.steps[0].state, 'STOPPED');
+});
+
+// M5.10.1 — "Approve (bypass) & retry step"
+
+test('approve-bypass: NEED_HUMAN → a NEW attempt of the same step with permission bypass; attempt 1 stays NEEDS_HUMAN', () => {
+  const s = startedSim();
+  s.runExecution(ended(RUN1, 'NEED_HUMAN'), 2);
+  const accepted = s.feed({ type: 'HUMAN_ANSWER', at: at(3), answer: 'approve-bypass' });
+  assert.equal(s.instance.state, 'RUNNING');
+  assert.equal(s.instance.waitingFor, null);
+  const [first, second] = s.instance.steps[0].attempts;
+  assert.equal(first.state, 'NEEDS_HUMAN');
+  assert.equal(second.attemptId, `${WF}/build/2`);
+  assert.equal(second.state, 'LAUNCHING');
+  assert.equal(second.permissionPolicy, 'bypass');
+  assert.equal(first.permissionPolicy, undefined, 'normal attempts inherit the project setting');
+  assert.deepEqual(accepted.commands, [{ type: 'START_EXECUTION', attemptId: `${WF}/build/2`, stepId: 'build', maxIterations: second.maxIterations, permissionPolicy: 'bypass' }]);
+  const human = s.events.filter((e) => e.type === 'HUMAN_INPUT_RECEIVED').at(-1);
+  assert.deepEqual(human?.payload, { answer: 'approve-bypass' });
+
+  // The approved re-run passes → the workflow continues with the next step; the extra
+  // execution was the human's, not the definition's budget (steps × 1 = 2 executions).
+  s.runExecution(ended(RUN2, 'DONE'), 4);
+  s.pass(5);
+  assert.equal(s.instance.steps[0].state, 'SUCCEEDED');
+  assert.equal(s.instance.steps[1].attempts.length, 1);
+  assert.equal(s.instance.steps[1].attempts[0].state, 'LAUNCHING');
+  assert.equal(s.instance.steps[1].attempts[0].permissionPolicy, undefined);
+});
+
+test('approve-bypass is offered once per step: a bypass re-run that needs a human again offers only fail/stop', () => {
+  const s = startedSim();
+  s.runExecution(ended(RUN1, 'NEED_HUMAN'), 2);
+  s.feed({ type: 'HUMAN_ANSWER', at: at(3), answer: 'approve-bypass' });
+  s.runExecution(ended(RUN2, 'NEED_HUMAN'), 4);
+  assert.equal(s.instance.state, 'WAITING_HUMAN');
+  assert.deepEqual(s.instance.waitingFor?.options, ['fail', 'stop']);
+  assert.equal(s.reject({ type: 'HUMAN_ANSWER', at: at(5), answer: 'approve-bypass' }).code, 'NOT_ALLOWED');
+  s.feed({ type: 'HUMAN_ANSWER', at: at(5), answer: 'fail' });
+  assert.equal(s.instance.terminalReason, 'HUMAN_MARKED_FAILED');
+});
+
+test('approve-bypass is not offered when bypassing permissions cannot help (quota, invalid response) — and is refused there', () => {
+  const q = startedSim();
+  q.runExecution(ended(RUN1, 'ERROR', { errorCode: 'CLAUDE_RUN_FAILED:NON_ZERO_EXIT', usageLimitDetected: true }), 2);
+  assert.deepEqual(q.instance.waitingFor?.options, ['fail', 'stop']);
+  assert.equal(q.reject({ type: 'HUMAN_ANSWER', at: at(3), answer: 'approve-bypass' }).code, 'NOT_ALLOWED');
+  const r = startedSim();
+  r.runExecution(ended(RUN1, 'ERROR', { errorCode: 'RESPONSE_INVALID' }), 2);
+  assert.ok(!r.instance.waitingFor?.options.includes('approve-bypass'));
+  // Outside WAITING_HUMAN it is refused like every other answer.
+  assert.equal(startedSim().reject({ type: 'HUMAN_ANSWER', at: at(2), answer: 'approve-bypass' }).code, 'NOT_ALLOWED');
+});
+
+test('approve-bypass on a one-step workflow is still allowed (human authorization), and replay reproduces it exactly', () => {
+  const s = startedSim(definition(['build']));
+  s.runExecution(ended(RUN1, 'NEED_HUMAN'), 2);
+  s.feed({ type: 'HUMAN_ANSWER', at: at(3), answer: 'approve-bypass' });
+  assert.equal(s.instance.steps[0].attempts[1].state, 'LAUNCHING');
+  s.runExecution(ended(RUN2, 'DONE'), 4);
+  s.pass(5);
+  assert.equal(s.instance.state, 'COMPLETED');
+  assert.equal(workflowUsage(s.instance).executions, 2);
+  const r = replayWorkflowLog(s.def, envelopes(s.events));
+  assert.equal(r.ok, true, !r.ok ? r.reason : '');
+  if (r.ok) assert.equal(canonicalJson(r.instance), canonicalJson(s.instance));
 });
 
 test('quota limits and refused resumes wait for a human (never retried)', () => {
