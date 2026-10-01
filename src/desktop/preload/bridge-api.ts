@@ -14,6 +14,13 @@ import type {
   SetDefaultProjectRequest,
   StartRunRequest,
   RecentEventsRequest,
+  WorkflowAnswerRequest,
+  WorkflowAttemptRequest,
+  WorkflowEvent,
+  WorkflowEventsRequest,
+  WorkflowIdRequest,
+  WorkflowPanelSnapshot,
+  WorkflowStartRequest,
 } from '../shared/ipc-contract.ts';
 
 /** The minimal slice of Electron's `ipcRenderer` this API needs — lets the API be
@@ -54,6 +61,22 @@ export interface AiBridgeApi {
   /** Returns an unsubscribe function; each call registers exactly one listener. */
   onEvent(listener: (event: BridgeEvent) => void): () => void;
   onSnapshot(listener: (snapshot: BridgeSnapshot) => void): () => void;
+
+  // M5.8 — workflows (docs/35 §3.3): data in, user intents out; Core decides everything.
+  workflowGetSnapshot(): Promise<ResponseOf<'workflow:getSnapshot'>>;
+  workflowList(): Promise<ResponseOf<'workflow:list'>>;
+  workflowGet(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:get'>>;
+  workflowGetEvents(request: WorkflowEventsRequest): Promise<ResponseOf<'workflow:getEvents'>>;
+  workflowGetAttempt(request: WorkflowAttemptRequest): Promise<ResponseOf<'workflow:getAttempt'>>;
+  workflowGetJournal(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:getJournal'>>;
+  workflowListDefinitions(): Promise<ResponseOf<'workflow:listDefinitions'>>;
+  workflowStart(request: WorkflowStartRequest): Promise<ResponseOf<'workflow:start'>>;
+  workflowPause(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:pause'>>;
+  workflowResume(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:resume'>>;
+  workflowStop(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:stop'>>;
+  workflowAnswer(request: WorkflowAnswerRequest): Promise<ResponseOf<'workflow:answer'>>;
+  onWorkflowEvent(listener: (event: WorkflowEvent) => void): () => void;
+  onWorkflowSnapshot(listener: (snapshot: WorkflowPanelSnapshot) => void): () => void;
 }
 
 export function createBridgeApi(ipc: IpcRendererLike): AiBridgeApi {
@@ -94,5 +117,19 @@ export function createBridgeApi(ipc: IpcRendererLike): AiBridgeApi {
     setDefaultProject: (request: SetDefaultProjectRequest) => call('bridge:setDefaultProject', request),
     onEvent: (listener: (event: BridgeEvent) => void) => subscribe('bridge:event', listener),
     onSnapshot: (listener: (snapshot: BridgeSnapshot) => void) => subscribe('bridge:snapshot', listener),
+    workflowGetSnapshot: () => call('workflow:getSnapshot'),
+    workflowList: () => call('workflow:list'),
+    workflowGet: (request: WorkflowIdRequest) => call('workflow:get', request),
+    workflowGetEvents: (request: WorkflowEventsRequest) => call('workflow:getEvents', request),
+    workflowGetAttempt: (request: WorkflowAttemptRequest) => call('workflow:getAttempt', request),
+    workflowGetJournal: (request: WorkflowIdRequest) => call('workflow:getJournal', request),
+    workflowListDefinitions: () => call('workflow:listDefinitions'),
+    workflowStart: (request: WorkflowStartRequest) => call('workflow:start', request),
+    workflowPause: (request: WorkflowIdRequest) => call('workflow:pause', request),
+    workflowResume: (request: WorkflowIdRequest) => call('workflow:resume', request),
+    workflowStop: (request: WorkflowIdRequest) => call('workflow:stop', request),
+    workflowAnswer: (request: WorkflowAnswerRequest) => call('workflow:answer', request),
+    onWorkflowEvent: (listener: (event: WorkflowEvent) => void) => subscribe('workflow:event', listener),
+    onWorkflowSnapshot: (listener: (snapshot: WorkflowPanelSnapshot) => void) => subscribe('workflow:snapshot', listener),
   });
 }

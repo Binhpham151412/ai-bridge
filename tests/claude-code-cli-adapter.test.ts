@@ -67,14 +67,22 @@ test('reports no system prompt received when appendSystemPrompt is omitted', asy
   assert.equal(r.receivedSystemPrompt, null);
 });
 
-test('sends permissionMode as a --permission-mode flag', async () => {
+test('M5.10.1: permission policy "bypass" reaches the CLI as --permission-mode bypassPermissions', async () => {
   const adapter = makeAdapter();
-  const r = await adapter.run({ cwd: process.cwd(), prompt: 'x', sessionId: randomUUID(), resume: false, timeoutMs: 5000, permissionMode: 'acceptEdits' });
+  const r = await adapter.run({ cwd: process.cwd(), prompt: 'x', sessionId: randomUUID(), resume: false, timeoutMs: 5000, permissionPolicy: 'bypass' });
   assert.equal(r.ok, true);
-  assert.equal(r.receivedPermissionMode, 'acceptEdits');
+  assert.equal(r.receivedPermissionMode, 'bypassPermissions');
+  assert.deepEqual(r.args.slice(r.args.indexOf('--permission-mode'), r.args.indexOf('--permission-mode') + 2), ['--permission-mode', 'bypassPermissions']);
 });
 
-test('reports no permission mode received when permissionMode is omitted', async () => {
+test('M5.10.1: permission policy "ask" reaches the CLI as --permission-mode acceptEdits (pre-M5.10.1 behaviour)', async () => {
+  const adapter = makeAdapter();
+  const r = await adapter.run({ cwd: process.cwd(), prompt: 'x', sessionId: randomUUID(), resume: true, timeoutMs: 5000, permissionPolicy: 'ask' });
+  assert.equal(r.receivedPermissionMode, 'acceptEdits');
+  assert.ok(!r.args.includes('bypassPermissions') && !r.args.includes('--dangerously-skip-permissions'));
+});
+
+test('reports no permission mode received when permissionPolicy is omitted', async () => {
   const adapter = makeAdapter();
   const r = await adapter.run({ cwd: process.cwd(), prompt: 'x', sessionId: randomUUID(), resume: false, timeoutMs: 5000 });
   assert.equal(r.ok, true);

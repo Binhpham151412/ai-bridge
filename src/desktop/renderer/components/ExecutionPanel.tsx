@@ -140,6 +140,16 @@ export function ExecutionPanel({
         </dd>
         <dt>Bytes</dt>
         <dd className="mono">{record.input.bytes}</dd>
+        <dt>Permission policy</dt>
+        <dd data-testid="exec-permission">
+          {record.permission ? (
+            <>
+              <strong>{record.permission.resolved}</strong> — {record.permission.reason} · <span className="mono small">{record.permission.cliArgs.join(' ')}</span>
+            </>
+          ) : (
+            'UNKNOWN (không có trong record — execution trước M5.10.1)'
+          )}
+        </dd>
       </dl>
 
       <ol className="steps" aria-label="Lifecycle">

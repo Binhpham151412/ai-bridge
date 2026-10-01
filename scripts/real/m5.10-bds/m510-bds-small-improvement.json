@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "m510-bds-small-improvement",
+  "version": 1,
+  "title": "M5.10 BDS — one small, bounded improvement",
+  "steps": [
+    {
+      "id": "small-improvement",
+      "title": "One small improvement",
+      "instruction": "Inspect the existing bdsdanang repository.\nIdentify one small, concrete improvement that can be safely implemented\nwithout changing the overall architecture.\nImplement only that improvement.\nRun the relevant tests/typecheck.\nProduce a concise report containing:\n- files inspected\n- files changed\n- what changed\n- tests/typechecks executed\n- results\n- remaining issues.\n\nDo not expand scope.\nDo not perform unrelated refactoring.\nDo not modify infrastructure unless required for the selected small fix.\n\nSafety limits for this first real run:\n- Do not read, print or modify .dev.vars, .env files or any other secret or credential file.\n- Do not deploy, publish, run database migrations, or run wrangler commands that contact Cloudflare.\n- Do not install, add, remove or upgrade dependencies.\n- Do not run git commit, git push, git reset, git checkout, git stash or git clean.\n- Do not modify files that already had uncommitted changes before this task, unless the selected fix requires it; if it does, say so in the report.",
+      "executor": { "role": "executor", "maxIterations": 3 },
+      "verification": { "checks": [], "acceptAiOnly": true },
+      "retry": { "maxAttempts": 1 }
+    }
+  ]
+}

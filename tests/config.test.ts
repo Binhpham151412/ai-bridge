@@ -10,11 +10,21 @@ test('the defaults match the values given in the spec', () => {
     reportMaxBytes: 1_048_576,
     stopOnUncommittedChanges: false,
     requireGitRepository: false,
+    // M5.10.1: product default is bypass for every provider (docs/61).
+    permissions: { claude: 'bypass', codex: 'bypass' },
   });
 });
 
 test('accepts a fully specified valid config', () => {
-  const raw = { maxIterations: 5, claudeTimeoutMs: 60000, codexTimeoutMs: 30000, reportMaxBytes: 2048, stopOnUncommittedChanges: true, requireGitRepository: true };
+  const raw = {
+    maxIterations: 5,
+    claudeTimeoutMs: 60000,
+    codexTimeoutMs: 30000,
+    reportMaxBytes: 2048,
+    stopOnUncommittedChanges: true,
+    requireGitRepository: true,
+    permissions: { claude: 'ask', codex: 'bypass' },
+  };
   const r = validateConfig(raw);
   assert.deepEqual(r.errors, []);
   assert.deepEqual(r.config, raw);

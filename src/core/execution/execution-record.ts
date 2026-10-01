@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AtomicJsonWriter } from '../state-manager/atomic-json-writer.ts';
 import { redactSecrets } from '../security/redact.ts';
+import type { ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
 
 /**
  * One persisted record per CLI invocation (M4.1): `<sessionDir>/<NNN>-claude-execution.json`
@@ -156,7 +157,14 @@ export interface ExecutionRecord {
   command: { executable: string; args: string[] };
   /** M4.2: token usage as reported by the CLI; null = UNKNOWN. Absent in pre-M4.2 records. */
   usage?: TokenUsage | null;
+  /** M5.10.1: the permission policy this call ran under and the exact CLI flags it became.
+   * Absent in pre-M5.10.1 records. */
+  permission?: ExecutionPermission;
   updatedAt: string;
+}
+
+export interface ExecutionPermission extends ResolvedPermissionPolicy {
+  cliArgs: string[];
 }
 
 export interface NewExecutionInput {
@@ -168,6 +176,7 @@ export interface NewExecutionInput {
   inputFile: string;
   inputSha256: string;
   inputBytes: number;
+  permission?: ExecutionPermission;
 }
 
 export function newExecutionRecord(i: NewExecutionInput): ExecutionRecord {
@@ -191,6 +200,7 @@ export function newExecutionRecord(i: NewExecutionInput): ExecutionRecord {
     output: { kind: 'CLI_OUTPUT', stdoutFile: null, stdoutBytes: 0, stdoutTruncated: false, stderrFile: null, stderrBytes: 0, stderrTruncated: false },
     command: { executable: '', args: [] },
     usage: null,
+    ...(i.permission !== undefined ? { permission: i.permission } : {}),
     updatedAt: new Date().toISOString(),
   };
 }

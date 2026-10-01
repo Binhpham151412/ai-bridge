@@ -8,9 +8,11 @@ import { JournalView } from './JournalView.tsx';
 import { RunView } from './RunView.tsx';
 import { Settings } from './Settings.tsx';
 import { SystemView } from './SystemView.tsx';
+import { WorkflowView } from './WorkflowView.tsx';
 
 const NAV: { id: View; label: string; hint: string }[] = [
   { id: 'run', label: 'Run', hint: 'What is happening now' },
+  { id: 'workflows', label: 'Workflows', hint: 'Multi-step workflows (M5)' },
   { id: 'journal', label: 'Journal', hint: 'Round-by-round history' },
   { id: 'artifacts', label: 'Artifacts', hint: 'Reports, reviews, prompts' },
   { id: 'settings', label: 'Settings', hint: 'Project & run configuration' },
@@ -92,6 +94,7 @@ export function App() {
               view so it opens on that session/round instead of its last local pick. */}
           <main className="content" key={`${nav.view}|${nav.seq}`}>
             {nav.view === 'run' && <RunView />}
+            {nav.view === 'workflows' && <WorkflowView />}
             {nav.view === 'journal' && <JournalView />}
             {nav.view === 'artifacts' && <ArtifactsView />}
             {nav.view === 'settings' && <Settings />}

@@ -1,5 +1,45 @@
 import { readFile } from 'node:fs/promises';
 import { runProcess } from '../../automation/process-runner.ts';
+import type { PermissionPolicy, ProviderPermissionCapability } from '../../core/permissions/permission-policy.ts';
+
+/**
+ * M5.10.1 — the permission policy on the installed Codex CLI. Verified against
+ * `codex exec --help` / `codex exec resume --help` of codex-cli 0.159.2 (no task was run):
+ * - `codex exec` has no interactive approval channel (`-a/--ask-for-approval` exists only on
+ *   the top-level interactive `codex`), so there is no real "ask" — the closest supported
+ *   restricted mode is the read-only sandbox AI Bridge has always used; anything the
+ *   sandbox blocks fails and is reported back to the model.
+ * - bypass → `--dangerously-bypass-approvals-and-sandbox`, accepted by both `exec` and
+ *   `exec resume` (no approvals, no sandbox).
+ * `exec resume` rejects `-s`, so the read-only sandbox is set with `-c sandbox_mode=…` there.
+ */
+export const CODEX_PERMISSION_CAPABILITY: ProviderPermissionCapability = {
+  provider: 'codex',
+  displayName: 'Codex',
+  verifiedAgainst: 'codex-cli 0.159.2 (`codex exec --help`, `codex exec resume --help`)',
+  modes: [
+    {
+      policy: 'ask',
+      label: 'Restricted: read-only sandbox (no approval prompts in codex exec)',
+      description:
+        '`codex exec` cannot ask for approval. Codex runs in a read-only sandbox: anything that needs more (writing files, starting servers, network) is blocked and reported back.',
+      cliMechanism: '-s read-only (resume: -c sandbox_mode="read-only")',
+    },
+    {
+      policy: 'bypass',
+      label: 'Bypass approvals and sandbox (automatic mode)',
+      description: 'Codex runs commands without approval prompts and without its sandbox.',
+      cliMechanism: '--dangerously-bypass-approvals-and-sandbox',
+    },
+  ],
+};
+
+/** The argv for a policy on a fresh (`exec`) or resumed (`exec resume`) run. Fails closed. */
+export function codexPermissionArgs(policy: PermissionPolicy, resume: boolean): string[] {
+  if (policy === 'bypass') return ['--dangerously-bypass-approvals-and-sandbox'];
+  if (policy === 'ask') return resume ? ['-c', 'sandbox_mode="read-only"'] : ['-s', 'read-only'];
+  throw new Error(`Unsupported Codex permission policy: ${JSON.stringify(policy)}`);
+}
 
 export interface CodexCliAdapterOptions {
   executable: string;
@@ -15,6 +55,8 @@ export interface CodexRunOptions {
   outputPath: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
+  /** M5.10.1: resolved policy, mapped by `codexPermissionArgs`. Omitted → `ask` (read-only sandbox, as before). */
+  permissionPolicy?: PermissionPolicy;
   onSpawn?: (pid: number) => void;
   /** The reviewer input was fully written to the CLI's stdin and stdin closed. */
   onInputFlushed?: (bytes: number) => void;
@@ -75,9 +117,9 @@ interface CodexEvent {
  * mismatched id is reported, never silently treated as "close enough."
  *
  * `codex exec resume` does not accept `-s`/`-C` (confirmed against the installed
- * CLI); sandbox is forced via `-c sandbox_mode="read-only"` on resume, and cwd is
- * always set via the child process's working directory rather than `-C`, so the
- * same mechanism works for both fresh and resumed runs.
+ * CLI); the permission policy picks the sandbox/approval flags (`codexPermissionArgs`),
+ * and cwd is always set via the child process's working directory rather than `-C`, so
+ * the same mechanism works for both fresh and resumed runs.
  */
 export class CodexCliAdapter {
   private readonly executable: string;
@@ -89,17 +131,17 @@ export class CodexCliAdapter {
   }
 
   async run(options: CodexRunOptions): Promise<CodexRunResult> {
+    const policy = options.permissionPolicy ?? 'ask';
     const args =
       options.threadId === null
-        ? [...this.commandArgsPrefix, 'exec', '--json', '-s', 'read-only', '--skip-git-repo-check', '-o', options.outputPath, '-']
+        ? [...this.commandArgsPrefix, 'exec', '--json', ...codexPermissionArgs(policy, false), '--skip-git-repo-check', '-o', options.outputPath, '-']
         : [
             ...this.commandArgsPrefix,
             'exec',
             'resume',
             options.threadId,
             '--json',
-            '-c',
-            'sandbox_mode="read-only"',
+            ...codexPermissionArgs(policy, true),
             '--skip-git-repo-check',
             '-o',
             options.outputPath,

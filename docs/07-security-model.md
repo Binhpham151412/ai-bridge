@@ -29,6 +29,14 @@ never bypasses.
 
 ## Permission safety
 
+> **Superseded by M5.10.1 (2026-10-01) — see [docs/61-provider-permission-policy.md](61-provider-permission-policy.md).**
+> Permissions are now a user-configurable, audited policy per provider, with **bypass as the
+> explicit product default** (Claude `--permission-mode bypassPermissions`, Codex
+> `--dangerously-bypass-approvals-and-sandbox`); `ask` keeps the behaviour described below
+> (`acceptEdits` / read-only sandbox). `assertSafePermissionMode` and
+> `src/core/preflight/permission-mode.ts` were removed. Bypass is reachable only through the typed
+> policy; unknown values fail closed. The paragraph below is kept as the pre-M5.10.1 record.
+
 `claude --permission-mode` supports `bypassPermissions` (confirmed via `claude --help`,
 not assumed), but AI Bridge's own policy forbids it. `assertSafePermissionMode`
 (`src/core/preflight/permission-mode.ts`) allowlists only `default`/`acceptEdits`/`plan`

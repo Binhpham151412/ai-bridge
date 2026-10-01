@@ -1,4 +1,42 @@
 import { runProcess } from '../../automation/process-runner.ts';
+import type { PermissionPolicy, ProviderPermissionCapability } from '../../core/permissions/permission-policy.ts';
+
+/**
+ * M5.10.1 — how the provider-neutral permission policy maps onto the installed Claude Code
+ * CLI. Verified against `claude --help` of 2.1.161 (no task was run): `--permission-mode`
+ * accepts acceptEdits | auto | bypassPermissions | default | dontAsk | plan.
+ * - bypass → `--permission-mode bypassPermissions` (the CLI's own bypass mode).
+ * - ask → `--permission-mode acceptEdits` — the behaviour every run had before M5.10.1:
+ *   edits are accepted (a headless run must be able to write its report), anything else
+ *   that needs approval is refused by the CLI because a headless run cannot prompt.
+ */
+export const CLAUDE_PERMISSION_CAPABILITY: ProviderPermissionCapability = {
+  provider: 'claude',
+  displayName: 'Claude Code',
+  verifiedAgainst: 'Claude Code 2.1.161 (`claude --help`)',
+  modes: [
+    {
+      policy: 'ask',
+      label: 'Ask before privileged actions',
+      description:
+        'Normal Claude Code permission checks. File edits are accepted; anything else that needs approval (e.g. starting a dev server, browser tools) is refused, because an AI Bridge run is headless and cannot show a prompt.',
+      cliMechanism: '--permission-mode acceptEdits',
+    },
+    {
+      policy: 'bypass',
+      label: 'Bypass permission prompts',
+      description: 'Claude Code skips its permission checks and runs the operations it supports without asking.',
+      cliMechanism: '--permission-mode bypassPermissions',
+    },
+  ],
+};
+
+/** The argv for a policy. Throws for anything the capability does not declare (fail closed). */
+export function claudePermissionArgs(policy: PermissionPolicy): string[] {
+  if (policy === 'bypass') return ['--permission-mode', 'bypassPermissions'];
+  if (policy === 'ask') return ['--permission-mode', 'acceptEdits'];
+  throw new Error(`Unsupported Claude permission policy: ${JSON.stringify(policy)}`);
+}
 
 export interface ClaudeCodeCliAdapterOptions {
   executable: string;
@@ -15,8 +53,8 @@ export interface ClaudeRunOptions {
   env?: NodeJS.ProcessEnv;
   /** Sent via --append-system-prompt (a channel separate from stdin) — e.g. the report-file contract. */
   appendSystemPrompt?: string;
-  /** e.g. "acceptEdits" — required for headless (-p) runs to actually write files; never "bypassPermissions" for M1. */
-  permissionMode?: string;
+  /** M5.10.1: the resolved provider-neutral policy; mapped by `claudePermissionArgs`. Omitted → no permission flag. */
+  permissionPolicy?: PermissionPolicy;
   /** Sent as --allowedTools <a> <b> ... */
   allowedTools?: string[];
   /** Sent as --disallowedTools <a> <b> ... */
@@ -121,7 +159,7 @@ export class ClaudeCodeCliAdapter {
     const sessionFlag = options.resume ? '--resume' : '--session-id';
     const args = [...this.commandArgsPrefix, '-p', '--output-format', 'stream-json', '--verbose', sessionFlag, options.sessionId];
     if (options.appendSystemPrompt !== undefined) args.push('--append-system-prompt', options.appendSystemPrompt);
-    if (options.permissionMode !== undefined) args.push('--permission-mode', options.permissionMode);
+    if (options.permissionPolicy !== undefined) args.push(...claudePermissionArgs(options.permissionPolicy));
     if (options.allowedTools !== undefined) args.push('--allowedTools', ...options.allowedTools);
     if (options.disallowedTools !== undefined) args.push('--disallowedTools', ...options.disallowedTools);
 

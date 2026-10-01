@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import type { AiBridgeConfig } from '../../../core/config/config.ts';
 import { MAX_ITERATIONS_LIMIT, MAX_TASK_LENGTH } from '../../shared/ipc-contract.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
+import { BYPASS_WARNING } from './Settings.tsx';
 
 /** M4.2: the review-round presets shown in the "Maximum review rounds" select. Any other
  * value (including anything above the last preset) is entered via "Custom…" — the hard
@@ -120,6 +121,12 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
           </label>
         </div>
         <p className="hint">Timeout là cấu hình Core của project (Settings). Core chạy System Check trước khi bắt đầu và từ chối nếu chưa PASS.</p>
+        {config && (
+          <p className={Object.values(config.permissions).includes('bypass') ? 'warn' : 'hint'} role="note" data-testid="start-permissions">
+            Permissions — Claude: {config.permissions.claude}, Codex: {config.permissions.codex} (Settings → AI Execution Permissions).
+            {Object.values(config.permissions).includes('bypass') ? ` ${BYPASS_WARNING}` : ''}
+          </p>
+        )}
         <div className="modal-actions">
           <button type="button" className="btn" onClick={onClose} disabled={submitting}>
             Hủy

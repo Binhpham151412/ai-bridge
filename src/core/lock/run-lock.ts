@@ -13,8 +13,9 @@ interface LockData {
   startedAt: string;
 }
 
-/** True if `pid` belongs to a process we can currently see running on this machine. */
-function isPidAlive(pid: number): boolean {
+/** True if `pid` belongs to a process we can currently see running on this machine.
+ * Exported (M5.8) so hosts derive "is the lock holder alive" with the lock's own rule. */
+export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

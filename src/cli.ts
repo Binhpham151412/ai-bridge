@@ -3,6 +3,8 @@ import path from 'node:path';
 import { parseArgs } from './cli-args.ts';
 import { BridgeEngine, CRASH_POINTS, type BridgeStartOptions } from './core/bridge-engine.ts';
 import type { DoctorReport } from './core/preflight/doctor.ts';
+import { runWorkflowCommand } from './hosts/workflow-cli.ts';
+import { readWorkflowActivity } from './hosts/workflow-read.ts';
 
 function printDoctorReport(report: DoctorReport): void {
   for (const c of report.checks) console.log(`[${c.status}] ${c.name} — ${c.detail}`);
@@ -33,6 +35,19 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
 // ---------------------------------------------------------------------------
 // start / resume — both funnel through BridgeEngine and share result printing
 // ---------------------------------------------------------------------------
+
+/** M5.8 mutual exclusion (docs/35 §3.1), derived from Core's workflow lock and persisted state:
+ * while a workflow owns the project's executions, an ordinary run is neither started nor
+ * resumed behind its back. Stop/pause/status stay available (emergency and read paths). */
+async function refuseWhileWorkflowActive(projectPath: string): Promise<boolean> {
+  const activity = await readWorkflowActivity(path.join(projectPath, '.ai-bridge'));
+  if (!activity.active) return false;
+  const which = activity.host?.workflowId ?? activity.running[0] ?? 'a workflow';
+  console.error(`ERROR_WORKFLOW_ACTIVE: ${which} is ${activity.host ? `running (Workflow Host pid ${activity.host.pid})` : 'RUNNING without a host (interrupted)'} in this project.`);
+  console.error(`Use "ai-bridge workflow status --project ${projectPath}" and the workflow commands instead.`);
+  process.exitCode = 2;
+  return true;
+}
 
 function printRunOutcome(outcome: Awaited<ReturnType<BridgeEngine['start']>>, projectPath: string): void {
   if (outcome.kind === 'BLOCKED_PREFLIGHT') {
@@ -79,6 +94,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
     return;
   }
   const projectPath = path.resolve(flags.project);
+  if (await refuseWhileWorkflowActive(projectPath)) return;
   const engine = new BridgeEngine(projectPath);
   console.log(`\nStarting in ${projectPath}\n`);
   const outcome = await engine.start({
@@ -91,6 +107,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
 
 async function cmdResume(flags: Record<string, string>): Promise<void> {
   const projectPath = path.resolve(flags.project ?? process.cwd());
+  if (await refuseWhileWorkflowActive(projectPath)) return;
   const engine = new BridgeEngine(projectPath);
   const status = await engine.status();
   console.log(status.status === 'PAUSED' ? 'Resuming from a pause.' : 'Recovering from an interruption.');
@@ -223,6 +240,9 @@ async function main(): Promise<void> {
   if (parsed.command === 'logs') return cmdLogs(parsed.flags);
   if (parsed.command === 'reset') return cmdReset(parsed.flags);
   if (parsed.command === 'pause') return cmdPause(parsed.flags);
+  if (parsed.command === 'workflow' && parsed.subcommand) {
+    process.exitCode = await runWorkflowCommand(parsed.subcommand, parsed.flags, { out: (line) => console.log(line), err: (line) => console.error(line) });
+  }
 }
 
 main().catch((err) => {

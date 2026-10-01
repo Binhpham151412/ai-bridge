@@ -63,9 +63,18 @@ export interface RunControllerOptions {
   activePollMs?: number;
   /** Cadence while idle — slow, only to notice a run started elsewhere (e.g. the CLI). */
   idlePollMs?: number;
+  /** M5.8 (docs/35 §3.1): true while a workflow owns the project's executions — derived from
+   * Core (the workflow lock and persisted state); every Run control is then off. */
+  workflowActivity?: (projectPath: string) => Promise<boolean>;
 }
 
 const NO_RECOVERY: BridgeRecoveryCheck = { kind: 'NONE' };
+
+const WORKFLOW_ACTIVE_ERROR: UiError = {
+  code: 'WORKFLOW_ACTIVE',
+  title: 'Một workflow đang hoạt động',
+  message: 'Một workflow đang dùng project này — execution của nó chỉ được điều khiển qua workflow.',
+};
 
 function fail(error: UiError): { ok: false; error: UiError } {
   return { ok: false, error: redactUiError(error) };
@@ -100,6 +109,7 @@ export class RunController {
   private lastOutcome: RunOutcomeSummary | null = null;
   private status: BridgeStatus | null = null;
   private recovery: BridgeRecoveryCheck = NO_RECOVERY;
+  private workflowActive = false;
 
   private lastEmitted = '';
   private readonly snapshotListeners = new Set<(snapshot: BridgeSnapshot) => void>();
@@ -110,7 +120,7 @@ export class RunController {
   private disposed = false;
 
   constructor(options: RunControllerOptions) {
-    this.opts = { activePollMs: 1000, idlePollMs: 5000, ...options };
+    this.opts = { activePollMs: 1000, idlePollMs: 5000, workflowActivity: async () => false, ...options };
   }
 
   // -------------------------------------------------------------------------
@@ -176,6 +186,7 @@ export class RunController {
   async start(request: StartRunRequest): Promise<ActionResponse> {
     if (!this.engine || !this.project) return fail(NO_PROJECT_ERROR);
     await this.refresh();
+    if (this.workflowActive) return fail(WORKFLOW_ACTIVE_ERROR);
     if (!this.buildSnapshot().controls.canStart) return fail(notAllowed('START', this.status?.status ?? null));
     return this.launchHost({ type: 'start', projectPath: this.project.path, task: request.task, maxIterations: request.maxIterations }, 'start');
   }
@@ -433,6 +444,7 @@ export class RunController {
       pendingAction: this.pendingAction,
       pauseRequested: this.pauseRequested,
       runAttached: this.host !== null,
+      workflowActive: this.workflowActive,
     });
     return {
       project: this.project,
@@ -482,9 +494,11 @@ export class RunController {
       try {
         const status = await engine.status();
         const recovery = await engine.checkRecovery();
+        const workflowActive = this.project ? await this.opts.workflowActivity(this.project.path) : false;
         if (engine !== this.engine) return; // project switched mid-refresh
         this.status = status;
         this.recovery = recovery;
+        this.workflowActive = workflowActive;
       } catch (err) {
         this.lastError = redactUiError(unexpectedError(err));
       }
