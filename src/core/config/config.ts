@@ -1,3 +1,5 @@
+import { PERMISSION_POLICIES, defaultProviderPermissions, isPermissionPolicy, isPermissionProvider, type ProviderPermissionSettings } from '../permissions/permission-policy.ts';
+
 export interface AiBridgeConfig {
   maxIterations: number;
   claudeTimeoutMs: number;
@@ -5,6 +7,8 @@ export interface AiBridgeConfig {
   reportMaxBytes: number;
   stopOnUncommittedChanges: boolean;
   requireGitRepository: boolean;
+  /** M5.10.1: per-provider permission policy (docs/61). Absent in a file → `bypass`. */
+  permissions: ProviderPermissionSettings;
 }
 
 export const DEFAULT_CONFIG: AiBridgeConfig = {
@@ -14,6 +18,7 @@ export const DEFAULT_CONFIG: AiBridgeConfig = {
   reportMaxBytes: 1_048_576,
   stopOnUncommittedChanges: false,
   requireGitRepository: false,
+  permissions: defaultProviderPermissions(),
 };
 
 export interface ValidateConfigResult {
@@ -31,7 +36,7 @@ export const MAX_RUN_ITERATIONS = 100;
 const MAX_ITERATIONS_CAP = MAX_RUN_ITERATIONS;
 const NUMBER_FIELDS = ['maxIterations', 'claudeTimeoutMs', 'codexTimeoutMs', 'reportMaxBytes'] as const;
 const BOOLEAN_FIELDS = ['stopOnUncommittedChanges', 'requireGitRepository'] as const;
-const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS];
+const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS, 'permissions'];
 
 function isPositiveInteger(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
@@ -50,7 +55,7 @@ export function validateConfig(raw: unknown): ValidateConfigResult {
     if (!KNOWN_FIELDS.includes(key)) errors.push(`Unknown config field: "${key}"`);
   }
 
-  const config: AiBridgeConfig = { ...DEFAULT_CONFIG };
+  const config: AiBridgeConfig = { ...DEFAULT_CONFIG, permissions: defaultProviderPermissions() };
 
   for (const field of NUMBER_FIELDS) {
     if (!(field in obj)) continue;
@@ -74,6 +79,19 @@ export function validateConfig(raw: unknown): ValidateConfigResult {
       continue;
     }
     config[field] = v;
+  }
+
+  if ('permissions' in obj) {
+    const v = obj.permissions;
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+      errors.push(`permissions must be an object like {"claude": "bypass", "codex": "ask"}, got ${JSON.stringify(v)}`);
+    } else {
+      for (const [provider, policy] of Object.entries(v as Record<string, unknown>)) {
+        if (!isPermissionProvider(provider)) errors.push(`Unknown permissions provider: "${provider}"`);
+        else if (!isPermissionPolicy(policy)) errors.push(`permissions.${provider} must be one of ${PERMISSION_POLICIES.join(', ')}, got ${JSON.stringify(policy)}`);
+        else config.permissions[provider] = policy;
+      }
+    }
   }
 
   return { config, errors };

@@ -163,9 +163,13 @@ test('stops with an error when Codex exits non-zero', () =>
     assert.equal(r.errorCode, 'CODEX_RUN_FAILED:NON_ZERO_EXIT');
   }));
 
-test('rejects construction with an unsafe permissionMode, before spawning anything', () =>
+test('M5.10.1: rejects construction with an unsupported permission policy, before spawning anything (fails closed)', () =>
   withProject(async (dirs) => {
-    assert.throws(() => makeOrchestrator(dirs, { permissionMode: 'bypassPermissions' }), /bypassPermissions/);
+    const bogus = { provider: 'claude', requested: 'inherit', resolved: 'yolo', source: 'provider-setting', reason: 'x' } as never;
+    const ok = { provider: 'codex', requested: 'inherit', resolved: 'bypass', source: 'provider-setting', reason: 'x' } as const;
+    assert.throws(() => makeOrchestrator(dirs, { permissionPolicies: { claude: bogus, codex: ok } }), /UNSUPPORTED_PERMISSION_POLICY/);
+    // A policy filed under the wrong provider is refused too.
+    assert.throws(() => makeOrchestrator(dirs, { permissionPolicies: { claude: ok as never, codex: ok } }), /UNSUPPORTED_PERMISSION_POLICY/);
   }));
 
 test('pauses cooperatively before starting the next iteration when shouldPause reports true', () =>

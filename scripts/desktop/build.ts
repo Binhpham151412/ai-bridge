@@ -3,6 +3,7 @@
 //   main.mjs      Electron main process (ESM, node platform, `electron` external)
 //   preload.cjs   preload script (CJS — required for sandboxed preloads)
 //   run-host.mjs  the child process that runs BridgeEngine.start()/resume()
+//   workflow-host.mjs  the Workflow Host (M5.8): runs the WorkflowEngine, forks run-host.mjs per execution
 //   renderer/     index.html + app.js (React) + app.css
 // Usage: node scripts/desktop/build.ts [--dev]   (--dev keeps sourcemaps, no minify)
 
@@ -24,6 +25,7 @@ const common = { bundle: true, sourcemap: dev, minify: !dev, logLevel: 'warning'
 await Promise.all([
   build({ ...common, entryPoints: [src('main/main.ts')], outfile: path.join(OUT, 'main.mjs'), platform: 'node', format: 'esm', target: 'node22', external: ['electron'] }),
   build({ ...common, entryPoints: [src('main/run-host-entry.ts')], outfile: path.join(OUT, 'run-host.mjs'), platform: 'node', format: 'esm', target: 'node22' }),
+  build({ ...common, entryPoints: [path.join(ROOT, 'src', 'hosts', 'workflow-host-entry.ts')], outfile: path.join(OUT, 'workflow-host.mjs'), platform: 'node', format: 'esm', target: 'node22' }),
   build({ ...common, entryPoints: [src('preload/preload.ts')], outfile: path.join(OUT, 'preload.cjs'), platform: 'node', format: 'cjs', target: 'node22', external: ['electron'] }),
   build({
     ...common,

@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ClaudeCodeCliAdapter } from '../../adapters/claude/claude-code-cli-adapter.ts';
-import type { CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
+import { CLAUDE_PERMISSION_CAPABILITY, claudePermissionArgs, type ClaudeCodeCliAdapter } from '../../adapters/claude/claude-code-cli-adapter.ts';
+import { CODEX_PERMISSION_CAPABILITY, codexPermissionArgs, type CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
+import { resolvePermissionPolicy, type ProviderPermissionCapability, type ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
 import { ReportValidator } from '../../reports/report-validator.ts';
 import { CodexResponseParser } from '../../reports/codex-response-parser.ts';
 import { buildReportContract, buildReviewerInput } from '../../prompts/templates.ts';
-import { assertSafePermissionMode } from '../preflight/permission-mode.ts';
 import { checkEnvForApiKeys } from '../cost-guard.ts';
 import { readFile } from 'node:fs/promises';
 import { sha256Text, verifyPromptIntegrity, verifyReportTransportIntegrity } from '../integrity/integrity.ts';
@@ -126,8 +126,10 @@ export interface OrchestratorOptions {
   responseParser?: CodexResponseParser;
   claudeEnv?: NodeJS.ProcessEnv;
   codexEnv?: NodeJS.ProcessEnv;
-  /** e.g. "acceptEdits" — never "bypassPermissions" for M1. Defaults to "acceptEdits". */
-  permissionMode?: string;
+  /** M5.10.1: the resolved permission policy per provider (docs/61), mapped to CLI flags by
+   * each adapter and recorded in every execution record. Omitted → resolved from the
+   * product default (`bypass`). */
+  permissionPolicies?: { claude: ResolvedPermissionPolicy; codex: ResolvedPermissionPolicy };
   /** Called once per Claude/Codex invocation — the CLI wires this to the JSONL audit log. */
   onLog?: (entry: LogEntry) => void | Promise<void>;
   /** Called the instant Claude/Codex is actually spawned — the CLI wires this to keep a live PID in state. */
@@ -173,6 +175,18 @@ export interface OrchestratorOptions {
   crashInjection?: { at: CrashPoint; onTrigger: () => void };
 }
 
+function defaultPolicy(provider: 'claude' | 'codex'): ResolvedPermissionPolicy {
+  const r = resolvePermissionPolicy({ provider });
+  if (!r.ok) throw new Error(r.reason);
+  return r.policy;
+}
+
+function assertSupportedPolicy(policy: ResolvedPermissionPolicy, capability: ProviderPermissionCapability): void {
+  if (policy.provider !== capability.provider || !capability.modes.some((m) => m.policy === policy.resolved)) {
+    throw new Error(`UNSUPPORTED_PERMISSION_POLICY: ${capability.displayName} does not support permission policy ${JSON.stringify(policy.resolved)} (provider ${JSON.stringify(policy.provider)})`);
+  }
+}
+
 /**
  * Drives the M1 loop: Claude executes → writes a report → the report is validated →
  * sent verbatim to Codex → Codex's response is parsed → its PROMPT goes back to
@@ -184,9 +198,14 @@ export class Orchestrator {
   private readonly o: OrchestratorOptions;
   private readonly validator: ReportValidator;
   private readonly parser: CodexResponseParser;
+  private readonly permissions: { claude: ResolvedPermissionPolicy; codex: ResolvedPermissionPolicy };
 
   constructor(options: OrchestratorOptions) {
-    assertSafePermissionMode(options.permissionMode ?? 'acceptEdits');
+    // Fails closed before anything is spawned: a policy the provider's CLI does not declare
+    // is a construction error, never silently downgraded or passed through.
+    this.permissions = options.permissionPolicies ?? { claude: defaultPolicy('claude'), codex: defaultPolicy('codex') };
+    assertSupportedPolicy(this.permissions.claude, CLAUDE_PERMISSION_CAPABILITY);
+    assertSupportedPolicy(this.permissions.codex, CODEX_PERMISSION_CAPABILITY);
     this.o = options;
     this.validator = options.reportValidator ?? new ReportValidator();
     this.parser = options.responseParser ?? new CodexResponseParser();
@@ -338,6 +357,7 @@ export class Orchestrator {
           inputFile: promptPath,
           inputSha256: promptSha256,
           inputBytes: promptBytes,
+          permission: { ...this.permissions.claude, cliArgs: claudePermissionArgs(this.permissions.claude.resolved) },
         });
         await claudeExecWriter.write(claudeExec);
 
@@ -349,7 +369,7 @@ export class Orchestrator {
           timeoutMs: o.claudeTimeoutMs,
           env: o.claudeEnv,
           appendSystemPrompt: contract,
-          permissionMode: o.permissionMode ?? 'acceptEdits',
+          permissionPolicy: this.permissions.claude.resolved,
           onSpawn: (pid) => {
             o.onPidUpdate?.({ adapter: 'claude', pid });
             claudeExec = { ...claudeExec, process: { ...claudeExec.process, pid, startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
@@ -486,6 +506,7 @@ export class Orchestrator {
         inputFile: codexInputPath,
         inputSha256: sha256Text(codexInput),
         inputBytes: Buffer.byteLength(codexInput, 'utf8'),
+        permission: { ...this.permissions.codex, cliArgs: codexPermissionArgs(this.permissions.codex.resolved, codexThreadId !== null) },
       });
       await codexExecWriter.write(codexExec);
       const codexResult = await o.codexAdapter.run({
@@ -495,6 +516,7 @@ export class Orchestrator {
         outputPath: codexReviewPath,
         timeoutMs: o.codexTimeoutMs,
         env: o.codexEnv,
+        permissionPolicy: this.permissions.codex.resolved,
         onSpawn: (pid) => {
           o.onPidUpdate?.({ adapter: 'codex', pid });
           codexExec = { ...codexExec, process: { ...codexExec.process, pid, startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };

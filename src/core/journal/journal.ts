@@ -131,6 +131,13 @@ export function usageLine(u: TokenUsage | null | undefined): string {
   return `${parts.join(', ')} — total ${u.totalTokens} (${u.totalFormula}; reported by the CLI)`;
 }
 
+/** M5.10.1: "why did this call (not) ask for permission?" — from the execution record only. */
+export function permissionLine(rec: ExecutionRecord | undefined): string {
+  const p = rec?.permission;
+  if (!p) return 'UNKNOWN (not recorded — execution recorded before M5.10.1)';
+  return `${p.resolved} — ${p.reason}; CLI: ${p.cliArgs.join(' ')}`;
+}
+
 const EVIDENCE: Record<string, string> = {
   CONFIRMED_BY_CLI: 'confirmed by the CLI',
   REQUESTED_NOT_CONFIRMED: 'requested by AI Bridge, not confirmed by the CLI',
@@ -186,6 +193,7 @@ export function renderClaudeReport(runId: string, it: IterationArtifacts): strin
     `- Prompt: ${nnn(it.iteration)}-claude-prompt.md — SHA-256 ${orUnknown(rec?.input.sha256 ?? it.claudePrompt?.sha256)}, ${orUnknown(rec?.input.bytes ?? it.claudePrompt?.bytes)} bytes`,
     `- Report SHA-256: ${report.sha256} (${hashNote}; source: ${report.source === 'REPORT_FILE' ? 'report file' : 'recovered from the input sent to Codex'})`,
     `- Token usage: ${usageLine(rec?.usage)}`,
+    `- Permission policy: ${permissionLine(rec)}`,
     '',
     '## Report (verbatim)',
     '',
@@ -221,6 +229,7 @@ export function renderReview(runId: string, it: IterationArtifacts): string | nu
     `- Codex Thread: ${sessionIdLine(x)}`,
     `- Review Status: ${it.codexVerdict ?? 'UNKNOWN (response could not be parsed)'}`,
     `- Codex token usage: ${usageLine(x?.usage)}`,
+    `- Codex permission policy: ${permissionLine(x)}`,
     '',
     '## Report Reviewed',
     '',

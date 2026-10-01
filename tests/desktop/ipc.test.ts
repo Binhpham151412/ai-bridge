@@ -28,8 +28,10 @@ function router(handlers: ChannelHandlers) {
 // ---------------------------------------------------------------------------
 
 test('the allowlist is exactly the documented bridge:* channels', () => {
-  assert.equal(INVOKE_CHANNELS.length, 17);
-  for (const c of INVOKE_CHANNELS) assert.match(c, /^bridge:[a-zA-Z]+$/);
+  // M5.8 appended 12 workflow:* channels after the unchanged 17 bridge:* ones (docs/39).
+  assert.equal(INVOKE_CHANNELS.length, 17 + 12);
+  for (const c of INVOKE_CHANNELS.slice(0, 17)) assert.match(c, /^bridge:[a-zA-Z]+$/);
+  for (const c of INVOKE_CHANNELS.slice(17)) assert.match(c, /^workflow:[a-zA-Z]+$/);
   assert.equal(isInvokeChannel('bridge:start'), true);
   for (const bad of ['bridge:exec', 'shell:openExternal', 'bridge:start ', '', null, 42, {}]) assert.equal(isInvokeChannel(bad), false);
 });

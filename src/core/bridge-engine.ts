@@ -8,12 +8,20 @@ import { runDoctorChecks, type DoctorCheckOutcome, type DoctorReport } from './p
 import { checkGitStatus } from './preflight/git-safety.ts';
 import { runProcess, killProcessTree } from '../automation/process-runner.ts';
 import { SessionManager } from './session-manager/session-manager.ts';
-import { ClaudeCodeCliAdapter } from '../adapters/claude/claude-code-cli-adapter.ts';
-import { CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
+import { CLAUDE_PERMISSION_CAPABILITY, ClaudeCodeCliAdapter } from '../adapters/claude/claude-code-cli-adapter.ts';
+import { CODEX_PERMISSION_CAPABILITY, CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
 import { Orchestrator, CRASH_POINTS, type LogEntry, type OrchestratorState, type OrchestratorFinalStatus, type CrashPoint } from './orchestrator/orchestrator.ts';
 import { appendLogLine } from './logger/logger.ts';
 import { acquireLock, releaseLock } from './lock/run-lock.ts';
 import { loadConfig, validateConfig, MAX_RUN_ITERATIONS, type AiBridgeConfig } from './config/config.ts';
+import {
+  isPermissionPolicyRequest,
+  resolvePermissionPolicy,
+  PERMISSION_POLICY_REQUESTS,
+  type PermissionPolicyRequest,
+  type ProviderPermissionCapability,
+  type ResolvedPermissionPolicy,
+} from './permissions/permission-policy.ts';
 import { requestStop } from './process-manager/process-manager.ts';
 import { appendEvent, formatHumanLogLine, rotateIfOversized, type BridgeEvent } from './observability/events.ts';
 import { AtomicJsonWriter } from './state-manager/atomic-json-writer.ts';
@@ -216,6 +224,14 @@ export interface BridgeEngineDeps {
 export interface BridgeStartOptions {
   task: string;
   maxIterations?: number;
+  /** M5.4 (ADR-017): an opaque caller reference (the workflow attemptId), persisted in
+   * `current-session.json` and echoed on `RUN_STARTED`, so a caller that crashed can find
+   * the run it started. Optional and never interpreted; absent for CLI/desktop runs. */
+  correlation?: string;
+  /** M5.10.1 (docs/61): execution-level permission override. Omitted/`inherit` → the
+   * project's per-provider setting (`config.permissions`, default `bypass`). Persisted
+   * with the run, so a resume keeps it. */
+  permissionPolicy?: PermissionPolicyRequest;
   /** Test-only pass-through to Orchestrator's real crash-injection mechanism — see
    * docs/06-recovery-design.md. Never set by production callers. */
   crashInjection?: { at: CrashPoint; onTrigger: () => void };
@@ -261,6 +277,9 @@ export interface BridgeConfigView {
   errors: string[];
   path: string;
   exists: boolean;
+  /** M5.10.1: what each provider's installed CLI actually supports for `config.permissions`
+   * (declared by the adapters, verified against their `--help`). */
+  permissionCapabilities: ProviderPermissionCapability[];
 }
 
 export type BridgeSaveConfigOutcome = { kind: 'SAVED'; config: AiBridgeConfig } | { kind: 'INVALID'; errors: string[] } | { kind: 'REFUSED_RUNNING'; pid: number };
@@ -298,8 +317,30 @@ interface SessionState {
   lastPromptHash: string | null;
   /** Absent in state files written before M4. */
   maxIterations?: number;
+  /** M5.4: the caller's correlation (BridgeStartOptions.correlation); absent when none was given. */
+  correlation?: string;
+  /** M5.10.1: the execution-level permission override, when one was given. */
+  permissionPolicy?: PermissionPolicyRequest;
   startedAt: string;
   updatedAt: string;
+}
+
+/** M5.4: a correlation is a short printable string (1–256 chars, no control characters). */
+export const MAX_CORRELATION_LENGTH = 256;
+
+export function isValidCorrelation(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 1 && value.length <= MAX_CORRELATION_LENGTH && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+type RunPermissionPolicies = { claude: ResolvedPermissionPolicy; codex: ResolvedPermissionPolicy };
+
+/** M5.10.1: one resolution for both providers of a run; fails closed (INVALID_OPTIONS). */
+function resolveRunPermissions(requested: unknown, config: AiBridgeConfig): { ok: true; policies: RunPermissionPolicies } | { ok: false; reason: string } {
+  const claude = resolvePermissionPolicy({ provider: 'claude', requested, settings: config.permissions });
+  if (!claude.ok) return { ok: false, reason: claude.reason };
+  const codex = resolvePermissionPolicy({ provider: 'codex', requested, settings: config.permissions });
+  if (!codex.ok) return { ok: false, reason: codex.reason };
+  return { ok: true, policies: { claude: claude.policy, codex: codex.policy } };
 }
 
 type RecoveryPlan =
@@ -395,10 +436,18 @@ export class BridgeEngine {
     if (options.maxIterations !== undefined && !(Number.isInteger(options.maxIterations) && options.maxIterations >= 1 && options.maxIterations <= MAX_RUN_ITERATIONS)) {
       return { kind: 'INVALID_OPTIONS', reason: `maxIterations must be an integer between 1 and ${MAX_RUN_ITERATIONS}, got ${String(options.maxIterations)}` };
     }
+    if (options.correlation !== undefined && !isValidCorrelation(options.correlation)) {
+      return { kind: 'INVALID_OPTIONS', reason: `correlation must be a printable string of 1 to ${MAX_CORRELATION_LENGTH} characters` };
+    }
+    if (options.permissionPolicy !== undefined && !isPermissionPolicyRequest(options.permissionPolicy)) {
+      return { kind: 'INVALID_OPTIONS', reason: `permissionPolicy must be one of ${PERMISSION_POLICY_REQUESTS.join(', ')}, got ${JSON.stringify(options.permissionPolicy)}` };
+    }
     const preflight = await this.deps.runDoctor(this.projectPath);
     if (preflight.report.overall !== 'PASS' || !preflight.claudeExe || !preflight.codexExe) {
       return { kind: 'BLOCKED_PREFLIGHT', doctorReport: preflight.report };
     }
+    const permissions = resolveRunPermissions(options.permissionPolicy, preflight.config);
+    if (!permissions.ok) return { kind: 'INVALID_OPTIONS', reason: permissions.reason };
 
     const lock = await acquireLock(p.lockPath);
     if (!lock.ok) return { kind: 'ALREADY_RUNNING', pid: lock.pid!, doctorReport: preflight.report };
@@ -420,6 +469,9 @@ export class BridgeEngine {
         claudeExe: preflight.claudeExe,
         codexExe: preflight.codexExe,
         config: { ...preflight.config, maxIterations },
+        correlation: options.correlation,
+        permissionPolicy: options.permissionPolicy,
+        permissions: permissions.policies,
         crashInjection: options.crashInjection,
       });
       return {
@@ -452,6 +504,8 @@ export class BridgeEngine {
     if (preflight.report.overall !== 'PASS' || !preflight.claudeExe || !preflight.codexExe) {
       return { kind: 'BLOCKED_PREFLIGHT', doctorReport: preflight.report };
     }
+    const permissions = resolveRunPermissions(state.permissionPolicy, preflight.config);
+    if (!permissions.ok) return { kind: 'INVALID_OPTIONS', reason: permissions.reason };
 
     const lock = await acquireLock(p.lockPath);
     if (!lock.ok) return { kind: 'ALREADY_RUNNING', pid: lock.pid!, doctorReport: preflight.report };
@@ -481,6 +535,11 @@ export class BridgeEngine {
         // A resumed run keeps the cap it was started with (persisted since M4); older
         // state files without the field fall back to config, as before.
         config: { ...preflight.config, maxIterations: state.maxIterations ?? preflight.config.maxIterations },
+        // M5.4: a resumed run keeps the correlation it was started with.
+        correlation: state.correlation,
+        // M5.10.1: and its permission override; the provider setting is re-read (recorded per execution).
+        permissionPolicy: state.permissionPolicy,
+        permissions: permissions.policies,
         resumeState,
       });
       await this.logEvent(p, { runId: state.runId, iteration: result.iterations.length, phase: result.finalStatus, event: 'RECOVERY_COMPLETED' });
@@ -693,7 +752,7 @@ export class BridgeEngine {
     const p = enginePaths(this.projectPath);
     const exists = await stat(p.configPath).then(() => true, () => false);
     const { config, errors } = await loadConfig(p.configPath, { readFile: (f) => readFile(f, 'utf8') });
-    return { config, errors, path: p.configPath, exists };
+    return { config, errors, path: p.configPath, exists, permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY] };
   }
 
   /** Validates with the same rules `doctor`/`start` use and writes `.ai-bridge/config.json`
@@ -841,6 +900,9 @@ export class BridgeEngine {
     claudeExe: string;
     codexExe: string;
     config: AiBridgeConfig;
+    correlation?: string;
+    permissionPolicy?: PermissionPolicyRequest;
+    permissions: RunPermissionPolicies;
     resumeState?: NonNullable<ConstructorParameters<typeof Orchestrator>[0]['resumeState']>;
     crashInjection?: { at: CrashPoint; onTrigger: () => void };
   }): ReturnType<Orchestrator['run']> {
@@ -870,12 +932,22 @@ export class BridgeEngine {
       lastReportPath: null,
       lastPromptHash: null,
       maxIterations: o.config.maxIterations,
+      ...(o.correlation !== undefined ? { correlation: o.correlation } : {}),
+      ...(o.permissionPolicy !== undefined ? { permissionPolicy: o.permissionPolicy } : {}),
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     const stateWriter = new AtomicJsonWriter<SessionState>(p.stateFile);
     await this.writeState(stateWriter, state);
-    await this.logEvent(p, { runId: o.bridgeSessionId, iteration: 0, phase: 'RUN', event: 'RUN_STARTED', maxIterations: o.config.maxIterations });
+    await this.logEvent(p, {
+      runId: o.bridgeSessionId,
+      iteration: 0,
+      phase: 'RUN',
+      event: 'RUN_STARTED',
+      maxIterations: o.config.maxIterations,
+      ...(o.correlation !== undefined ? { correlation: o.correlation } : {}),
+      permissions: { claude: o.permissions.claude.resolved, codex: o.permissions.codex.resolved },
+    });
 
     const orchestrator = new Orchestrator({
       projectName: o.projectName,
@@ -891,6 +963,7 @@ export class BridgeEngine {
       codexAdapter: new CodexCliAdapter({ executable: o.codexExe, commandArgsPrefix: this.deps.codexCommandArgsPrefix }),
       claudeEnv: this.deps.claudeEnv,
       codexEnv: this.deps.codexEnv,
+      permissionPolicies: o.permissions,
       resumeState: o.resumeState,
       crashInjection: o.crashInjection,
       shouldStop: () => stopRequested,

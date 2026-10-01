@@ -31,6 +31,8 @@ test('the exposed API is a frozen object of fixed functions — no generic invok
     'listSessions',
     'onEvent',
     'onSnapshot',
+    'onWorkflowEvent',
+    'onWorkflowSnapshot',
     'pause',
     'resume',
     'saveProjectConfig',
@@ -38,6 +40,19 @@ test('the exposed API is a frozen object of fixed functions — no generic invok
     'setDefaultProject',
     'start',
     'stop',
+    // M5.8 (appended): one fixed function per workflow:* channel + two push subscriptions.
+    'workflowAnswer',
+    'workflowGet',
+    'workflowGetAttempt',
+    'workflowGetEvents',
+    'workflowGetJournal',
+    'workflowGetSnapshot',
+    'workflowList',
+    'workflowListDefinitions',
+    'workflowPause',
+    'workflowResume',
+    'workflowStart',
+    'workflowStop',
   ]);
   for (const forbidden of ['invoke', 'send', 'on', 'ipcRenderer', 'require', 'process']) assert.equal(forbidden in api, false, forbidden);
 });

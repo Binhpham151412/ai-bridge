@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 
-export type View = 'run' | 'journal' | 'artifacts' | 'settings' | 'system';
+export type View = 'run' | 'workflows' | 'journal' | 'artifacts' | 'settings' | 'system';
 
 /** Where a cross-view link lands: a session, and optionally one of its rounds. */
 export interface NavTarget {

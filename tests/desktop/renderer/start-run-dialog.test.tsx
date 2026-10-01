@@ -13,10 +13,19 @@ import { FakeMain, click, flush, makeSnapshot, q, render } from './harness.tsx';
 const SETTINGS: SettingsView = {
   app: { defaultProjectPath: null },
   project: {
-    config: { maxIterations: 10, claudeTimeoutMs: 1_800_000, codexTimeoutMs: 600_000, reportMaxBytes: 1_048_576, stopOnUncommittedChanges: false, requireGitRepository: false },
+    config: {
+      maxIterations: 10,
+      claudeTimeoutMs: 1_800_000,
+      codexTimeoutMs: 600_000,
+      reportMaxBytes: 1_048_576,
+      stopOnUncommittedChanges: false,
+      requireGitRepository: false,
+      permissions: { claude: 'bypass', codex: 'bypass' },
+    },
     errors: [],
     path: 'D:\\work\\demo\\.ai-bridge\\config.json',
     exists: true,
+    permissionCapabilities: [],
   },
   logs: { maxFileBytes: 2_000_000 },
 };

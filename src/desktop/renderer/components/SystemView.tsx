@@ -93,7 +93,10 @@ function SystemCheckCard() {
               </tbody>
             ))}
           </table>
-          <p className="hint">Permission mode của Claude luôn là acceptEdits (Core không bao giờ cho bỏ qua kiểm tra quyền) — đây là quy tắc của Core, không phải một mục doctor riêng.</p>
+          <p className="hint">
+            Quyền thực thi của Claude/Codex theo chính sách trong Settings → AI Execution Permissions (mặc định: bypass). Mỗi execution ghi lại chính sách đã áp dụng
+            và cờ CLI tương ứng — không phải một mục doctor riêng.
+          </p>
         </>
       )}
     </Card>

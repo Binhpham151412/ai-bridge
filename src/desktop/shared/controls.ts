@@ -11,6 +11,9 @@ export interface ControlInput {
   pendingAction: PendingAction | null;
   pauseRequested: boolean;
   runAttached: boolean;
+  /** M5.8: a workflow owns the project's executions (Core: the workflow lock / a RUNNING
+   * instance). Its execution is controlled through the workflow, never the Run controls. */
+  workflowActive?: boolean;
 }
 
 /**
@@ -20,6 +23,7 @@ export interface ControlInput {
  */
 export function deriveControls(input: ControlInput): ControlState {
   const { hasProject, status, iteration, recovery, pendingAction, pauseRequested, runAttached } = input;
+  if (input.workflowActive) return { canStart: false, canPause: false, canResume: false, stopMode: null };
   const running = status === 'RUNNING' || runAttached;
   const busy = pendingAction !== null;
   const unfinished = status === 'PAUSED' || status === 'INTERRUPTED';

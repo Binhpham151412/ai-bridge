@@ -1,5 +1,7 @@
 import { fork } from 'node:child_process';
 import type { RunHostExit, RunHostProcess } from './run-controller.ts';
+import type { HostCommand } from './run-host-protocol.ts';
+import { hostSpawnOptions, type HostLifetime } from './process-lifetime.ts';
 
 export interface ForkRunHostOptions {
   scriptPath: string;
@@ -7,21 +9,40 @@ export interface ForkRunHostOptions {
   execPath: string;
   env: NodeJS.ProcessEnv;
   execArgv?: string[];
+  /** M5.8.1 (process-lifetime.ts). Default 'with-parent' — the M4 run host and the Workflow Host
+   * keep it; only Execution Hosts forked by a Workflow Host are 'independent'. */
+  lifetime?: HostLifetime;
 }
 
 const STDERR_TAIL_BYTES = 8 * 1024;
 
+/** A forked host process speaking a JSON IPC protocol whose parent→child messages are `C`. */
+export interface ChildHostProcess<C> {
+  readonly pid: number | undefined;
+  send(message: C): void;
+  onMessage(listener: (message: unknown) => void): void;
+  onExit(listener: (exit: RunHostExit) => void): void;
+}
+
 export function forkRunHost(options: ForkRunHostOptions): RunHostProcess {
+  return forkChildHost<HostCommand>(options);
+}
+
+/** M5.8: the same fork for any host protocol — the Workflow Host (src/hosts/workflow-host-entry.ts) reuses it. */
+export function forkChildHost<C>(options: ForkRunHostOptions): ChildHostProcess<C> {
+  const lifetime = hostSpawnOptions(options.lifetime ?? 'with-parent');
   const child = fork(options.scriptPath, [], {
     execPath: options.execPath,
     execArgv: options.execArgv ?? [],
     env: options.env,
-    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    stdio: lifetime.stdio,
+    detached: lifetime.detached,
     serialization: 'json',
     windowsHide: true,
   });
 
-  // Bounded: only the tail is kept, for diagnostics after an unexpected exit.
+  // Bounded: only the tail is kept, for diagnostics after an unexpected exit ('with-parent'
+  // hosts only — an 'independent' host has no stderr pipe to its parent).
   let stderrTail = '';
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => {
@@ -46,8 +67,8 @@ export function forkRunHost(options: ForkRunHostOptions): RunHostProcess {
     get pid() {
       return child.pid;
     },
-    send(command) {
-      if (child.connected) child.send(command);
+    send(message: C) {
+      if (child.connected) child.send(message as object);
     },
     onMessage(listener) {
       child.on('message', listener);

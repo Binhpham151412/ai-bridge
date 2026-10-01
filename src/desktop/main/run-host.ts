@@ -27,7 +27,7 @@ export async function runHostCommand(
   const unsubscribe = engine.subscribe(onEvent);
   try {
     return command.type === 'start'
-      ? await engine.start({ task: command.task, maxIterations: command.maxIterations, crashInjection })
+      ? await engine.start({ task: command.task, maxIterations: command.maxIterations, correlation: command.correlation, permissionPolicy: command.permissionPolicy, crashInjection })
       : await engine.resume();
   } finally {
     unsubscribe();

@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import type { PermissionPolicy, ProviderPermissionSettings } from '../../../core/permissions/permission-policy.ts';
 import type { SettingsView } from '../../shared/ipc-contract.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
 import { Card, EmptyState } from './common.tsx';
@@ -14,6 +15,11 @@ const BOOLEAN_FIELDS = [
   { key: 'stopOnUncommittedChanges', label: 'Chặn run khi có thay đổi chưa commit' },
   { key: 'requireGitRepository', label: 'Bắt buộc project là git repository' },
 ] as const;
+
+/** M5.10.1 (docs/61) — shown verbatim; the default is bypass, so this is visible by default. */
+export const BYPASS_STATEMENT = 'Bypass permissions allows the AI provider to execute supported operations without interactive permission prompts.';
+export const BYPASS_WARNING =
+  'Permission bypass is enabled by default. AI providers may execute commands and access project resources without interactive approval.';
 
 /** "= 30 phút" next to a millisecond field, computed from what is typed (display only). */
 function minutesOf(value: string | boolean | undefined): string | null {
@@ -32,6 +38,7 @@ export function Settings() {
   const { api, snapshot, runAction } = useBridge();
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Record<string, string | boolean>>({});
+  const [permissions, setPermissions] = useState<ProviderPermissionSettings | null>(null);
   const [reload, setReload] = useState(0);
   const projectPath = snapshot?.project?.path ?? null;
 
@@ -41,7 +48,16 @@ export function Settings() {
       if (!active || !res.ok) return;
       setView(res.data);
       const cfg = res.data.project?.config;
-      if (cfg) setDraft(Object.fromEntries(Object.entries(cfg).map(([k, v]) => [k, typeof v === 'boolean' ? v : String(v)])));
+      if (cfg) {
+        // Scalar fields are edited as text/checkboxes; `permissions` (an object) has its own state.
+        const scalars: [string, string | boolean][] = [];
+        for (const [k, v] of Object.entries(cfg)) {
+          if (typeof v === 'boolean') scalars.push([k, v]);
+          else if (typeof v === 'number') scalars.push([k, String(v)]);
+        }
+        setDraft(Object.fromEntries(scalars));
+        setPermissions({ ...cfg.permissions });
+      }
     });
     return () => {
       active = false;
@@ -53,6 +69,7 @@ export function Settings() {
     // Numbers are sent as typed; Core's validateConfig decides what is valid.
     const config: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(draft)) config[k] = typeof v === 'boolean' ? v : v.trim() === '' ? v : Number(v);
+    if (permissions) config.permissions = permissions;
     const res = await runAction(() => api.saveProjectConfig({ config }));
     if (res.ok) setReload((n) => n + 1);
   };
@@ -63,6 +80,8 @@ export function Settings() {
 
   const project = view?.project ?? null;
   const running = snapshot?.status?.status === 'RUNNING';
+  const anyBypass = permissions !== null && Object.values(permissions).includes('bypass');
+  const setPolicy = (provider: keyof ProviderPermissionSettings, policy: PermissionPolicy) => setPermissions((p) => (p ? { ...p, [provider]: policy } : p));
 
   return (
     <div className="page settings">
@@ -120,6 +139,45 @@ export function Settings() {
                 {f.label}
               </label>
             ))}
+            {permissions && (
+              <section className="permissions" data-testid="permissions-section" aria-labelledby="permissions-title">
+                <h3 className="form-section" id="permissions-title">
+                  AI Execution Permissions
+                </h3>
+                <p className="hint">{BYPASS_STATEMENT}</p>
+                {anyBypass && (
+                  <p className="warn" role="note" data-testid="permission-bypass-warning">
+                    {BYPASS_WARNING}
+                  </p>
+                )}
+                {project.permissionCapabilities.map((cap) => (
+                  <fieldset key={cap.provider} className="permission-provider" data-testid={`permission-${cap.provider}`}>
+                    <legend>{cap.displayName}</legend>
+                    {cap.modes.map((mode) => (
+                      <label key={mode.policy} className="check">
+                        <input
+                          type="radio"
+                          name={`permission-${cap.provider}`}
+                          value={mode.policy}
+                          checked={permissions[cap.provider] === mode.policy}
+                          onChange={() => setPolicy(cap.provider, mode.policy)}
+                          data-testid={`permission-${cap.provider}-${mode.policy}`}
+                        />
+                        <span>
+                          {mode.label}
+                          {mode.policy === 'bypass' ? ' (default)' : ''}
+                          <br />
+                          <small className="hint">
+                            {mode.description} CLI: <code>{mode.cliMechanism}</code>
+                          </small>
+                        </span>
+                      </label>
+                    ))}
+                    <small className="hint">Chỉ hiển thị các chế độ CLI đã cài thực sự hỗ trợ — kiểm tra theo {cap.verifiedAgainst}.</small>
+                  </fieldset>
+                ))}
+              </section>
+            )}
             <div className="row-actions">
               <button type="submit" className="btn btn-primary" disabled={running}>
                 Lưu cấu hình

@@ -4,6 +4,7 @@ import type { BridgeEvent } from '../../core/observability/events.ts';
 import type { ExecutionOutput, SessionArtifacts, SessionSummary } from '../../core/session-history/session-history.ts';
 import { JOURNAL_ENTRY_KINDS, type JournalEntryKind } from '../../core/journal/journal-types.ts';
 import type { JournalEntry, JournalIndex } from '../../core/journal/journal.ts';
+import type { WorkflowAttemptView, WorkflowDefinitionSummary, WorkflowEvent, WorkflowListItem, WorkflowSnapshot } from '../../hosts/workflow-read.ts';
 
 /**
  * The typed IPC contract between Renderer ⇄ Preload ⇄ Main (M4 §21). Every channel the
@@ -31,11 +32,24 @@ export const INVOKE_CHANNELS = [
   'bridge:setDefaultProject',
   'bridge:getJournal',
   'bridge:getJournalEntry',
+  // M5.8 (docs/35 §3.3): workflows — appended; the 17 channels above are unchanged.
+  'workflow:getSnapshot',
+  'workflow:list',
+  'workflow:get',
+  'workflow:getEvents',
+  'workflow:getAttempt',
+  'workflow:getJournal',
+  'workflow:listDefinitions',
+  'workflow:start',
+  'workflow:pause',
+  'workflow:resume',
+  'workflow:stop',
+  'workflow:answer',
 ] as const;
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];
 
 /** Main → Renderer pushes. The renderer can only listen on these, never send. */
-export const PUSH_CHANNELS = ['bridge:event', 'bridge:snapshot'] as const;
+export const PUSH_CHANNELS = ['bridge:event', 'bridge:snapshot', 'workflow:event', 'workflow:snapshot'] as const;
 export type PushChannel = (typeof PUSH_CHANNELS)[number];
 
 export function isInvokeChannel(value: unknown): value is InvokeChannel {
@@ -103,6 +117,36 @@ export interface SettingsView {
 }
 
 // ---------------------------------------------------------------------------
+// Workflows (M5.8) — data only: states, availability (`controls`) and evidence levels all
+// come from Core; the renderer never derives them (docs/35 §4, ADR-010)
+// ---------------------------------------------------------------------------
+
+export type { WorkflowAttemptView, WorkflowDefinitionSummary, WorkflowEvent, WorkflowListItem, WorkflowSnapshot };
+
+export type WorkflowPendingAction = 'start' | 'pause' | 'resume' | 'stop' | 'answer';
+
+/** What the workflow panel shows, assembled by Main's WorkflowController from Core reads. */
+export interface WorkflowPanelSnapshot {
+  project: ProjectInfo | null;
+  /** The workflow followed: the one this app last acted on, else the hosted/running one, else the newest. */
+  workflow: WorkflowSnapshot | null;
+  /** Core-derived mutual-exclusion facts (the workflow lock + persisted RUNNING instances). */
+  activity: { hostPid: number | null; hostedWorkflowId: string | null; running: string[] };
+  /** Whether a NEW workflow may start now; the reason when it may not. */
+  canStartNew: boolean;
+  startBlockedBy: UiError | null;
+  /** True while a Workflow Host started by this app instance is alive (live workflow events flow). */
+  attached: boolean;
+  pendingAction: WorkflowPendingAction | null;
+  lastError: UiError | null;
+}
+
+export interface WorkflowJournalView {
+  workflowId: string;
+  markdown: string;
+}
+
+// ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
 
@@ -140,6 +184,33 @@ export interface GetJournalEntryRequest {
   iteration?: number;
 }
 
+export interface WorkflowIdRequest {
+  workflowId: string;
+}
+export interface WorkflowEventsRequest {
+  workflowId: string;
+  /** Events with seq > afterSeq (0 = from the start). */
+  afterSeq: number;
+  limit: number;
+}
+export interface WorkflowAttemptRequest {
+  attemptId: string;
+}
+export interface WorkflowStartRequest {
+  /** `<project>/.ai-bridge/workflows/definitions/<definitionId>.json` (ADR-018). */
+  definitionId: string;
+  /** The hash from workflow:listDefinitions — a definition changed since is refused. */
+  definitionHash: string;
+  /** Declared input values only; checked against the definition in Main before anything starts. */
+  inputs: Record<string, string>;
+}
+export interface WorkflowAnswerRequest {
+  workflowId: string;
+  /** The HUMAN_ANSWER values M5 accepts. */
+  /** `approve-bypass` (M5.10.1): re-run the step that asked for a human with permission bypass. */
+  answer: 'fail' | 'stop' | 'approve-bypass';
+}
+
 export interface InvokeContract {
   'bridge:getSnapshot': { request: void; response: DataResponse<BridgeSnapshot> };
   'bridge:start': { request: StartRunRequest; response: ActionResponse };
@@ -158,6 +229,18 @@ export interface InvokeContract {
   'bridge:setDefaultProject': { request: SetDefaultProjectRequest; response: ActionResponse };
   'bridge:getJournal': { request: GetJournalRequest; response: DataResponse<JournalIndex> };
   'bridge:getJournalEntry': { request: GetJournalEntryRequest; response: DataResponse<JournalEntry> };
+  'workflow:getSnapshot': { request: void; response: DataResponse<WorkflowPanelSnapshot> };
+  'workflow:list': { request: void; response: DataResponse<WorkflowListItem[]> };
+  'workflow:get': { request: WorkflowIdRequest; response: DataResponse<WorkflowSnapshot> };
+  'workflow:getEvents': { request: WorkflowEventsRequest; response: DataResponse<WorkflowEvent[]> };
+  'workflow:getAttempt': { request: WorkflowAttemptRequest; response: DataResponse<WorkflowAttemptView> };
+  'workflow:getJournal': { request: WorkflowIdRequest; response: DataResponse<WorkflowJournalView> };
+  'workflow:listDefinitions': { request: void; response: DataResponse<WorkflowDefinitionSummary[]> };
+  'workflow:start': { request: WorkflowStartRequest; response: DataResponse<{ workflowId: string }> };
+  'workflow:pause': { request: WorkflowIdRequest; response: ActionResponse };
+  'workflow:resume': { request: WorkflowIdRequest; response: ActionResponse };
+  'workflow:stop': { request: WorkflowIdRequest; response: ActionResponse };
+  'workflow:answer': { request: WorkflowAnswerRequest; response: ActionResponse };
 }
 
 export type RequestOf<C extends InvokeChannel> = InvokeContract[C]['request'];
@@ -166,6 +249,8 @@ export type ResponseOf<C extends InvokeChannel> = InvokeContract[C]['response'];
 export interface PushContract {
   'bridge:event': BridgeEvent;
   'bridge:snapshot': BridgeSnapshot;
+  'workflow:event': WorkflowEvent;
+  'workflow:snapshot': WorkflowPanelSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +366,81 @@ function validateGetJournalEntry(payload: unknown): Validation<GetJournalEntryRe
   return { ok: true, value: iteration === undefined ? { runId, kind: kind as JournalEntryKind } : { runId, kind: kind as JournalEntryKind, iteration } };
 }
 
+// --- workflows (M5.8): ids by strict pattern; the renderer never sends paths, commands or prompts
+
+const WORKFLOW_ID = /^wf_\d{4}-\d{2}-\d{2}_\d{3}$/;
+const KEBAB_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ATTEMPT_ID = /^wf_\d{4}-\d{2}-\d{2}_\d{3}\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*\/[1-9]\d{0,2}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const MAX_ID_LENGTH = 64;
+export const MAX_WORKFLOW_EVENTS = 1000;
+export const MAX_WORKFLOW_INPUTS = 64;
+/** Same cap as Core's WORKFLOW_LIMITS.maxTextBytes. */
+export const MAX_WORKFLOW_INPUT_LENGTH = 256 * 1024;
+const WORKFLOW_ANSWERS: readonly string[] = ['fail', 'stop', 'approve-bypass'];
+
+const isKebabId = (v: unknown): v is string => typeof v === 'string' && v.length <= MAX_ID_LENGTH && KEBAB_ID.test(v);
+
+function validateWorkflowIdRequest(payload: unknown): Validation<WorkflowIdRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['workflowId']);
+  if (extra) return { ok: false, reason: extra };
+  if (typeof payload.workflowId !== 'string' || !WORKFLOW_ID.test(payload.workflowId)) return { ok: false, reason: 'workflowId must look like wf_YYYY-MM-DD_NNN' };
+  return { ok: true, value: { workflowId: payload.workflowId } };
+}
+
+function validateWorkflowEvents(payload: unknown): Validation<WorkflowEventsRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['workflowId', 'afterSeq', 'limit']);
+  if (extra) return { ok: false, reason: extra };
+  const { workflowId, afterSeq, limit } = payload;
+  if (typeof workflowId !== 'string' || !WORKFLOW_ID.test(workflowId)) return { ok: false, reason: 'workflowId must look like wf_YYYY-MM-DD_NNN' };
+  if (typeof afterSeq !== 'number' || !Number.isInteger(afterSeq) || afterSeq < 0 || afterSeq > 1_000_000_000) return { ok: false, reason: 'afterSeq must be a non-negative integer' };
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_WORKFLOW_EVENTS) return { ok: false, reason: `limit must be an integer between 1 and ${MAX_WORKFLOW_EVENTS}` };
+  return { ok: true, value: { workflowId, afterSeq, limit } };
+}
+
+function validateWorkflowAttempt(payload: unknown): Validation<WorkflowAttemptRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['attemptId']);
+  if (extra) return { ok: false, reason: extra };
+  const { attemptId } = payload;
+  if (typeof attemptId !== 'string' || !ATTEMPT_ID.test(attemptId) || attemptId.split('/')[1].length > MAX_ID_LENGTH) return { ok: false, reason: 'attemptId must look like wf_YYYY-MM-DD_NNN/<step-id>/<n>' };
+  return { ok: true, value: { attemptId } };
+}
+
+function validateWorkflowStart(payload: unknown): Validation<WorkflowStartRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['definitionId', 'definitionHash', 'inputs']);
+  if (extra) return { ok: false, reason: extra };
+  const { definitionId, definitionHash, inputs } = payload;
+  if (!isKebabId(definitionId)) return { ok: false, reason: 'definitionId must be a kebab-case id of at most 64 characters' };
+  if (typeof definitionHash !== 'string' || !SHA256_HEX.test(definitionHash)) return { ok: false, reason: 'definitionHash must be a sha256 hex digest' };
+  if (!isPlainObject(inputs)) return { ok: false, reason: 'inputs must be an object' };
+  const entries = Object.entries(inputs);
+  if (entries.length > MAX_WORKFLOW_INPUTS) return { ok: false, reason: 'inputs has too many fields' };
+  const values: Record<string, string> = {};
+  for (const [name, value] of entries) {
+    if (!isKebabId(name)) return { ok: false, reason: `input name ${JSON.stringify(name)} must be a kebab-case id` };
+    if (typeof value !== 'string') return { ok: false, reason: `input ${name} must be a string` };
+    if (value.length > MAX_WORKFLOW_INPUT_LENGTH) return { ok: false, reason: `input ${name} must be at most ${MAX_WORKFLOW_INPUT_LENGTH} characters` };
+    if (value.includes('\u0000')) return { ok: false, reason: `input ${name} must not contain NUL characters` };
+    values[name] = value;
+  }
+  // Which inputs the definition declares, and their limits, are checked in Main against the definition itself.
+  return { ok: true, value: { definitionId, definitionHash, inputs: values } };
+}
+
+function validateWorkflowAnswer(payload: unknown): Validation<WorkflowAnswerRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['workflowId', 'answer']);
+  if (extra) return { ok: false, reason: extra };
+  const { workflowId, answer } = payload;
+  if (typeof workflowId !== 'string' || !WORKFLOW_ID.test(workflowId)) return { ok: false, reason: 'workflowId must look like wf_YYYY-MM-DD_NNN' };
+  if (typeof answer !== 'string' || !WORKFLOW_ANSWERS.includes(answer)) return { ok: false, reason: `answer must be one of: ${WORKFLOW_ANSWERS.join(', ')}` };
+  return { ok: true, value: { workflowId, answer: answer as WorkflowAnswerRequest['answer'] } };
+}
+
 const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<RequestOf<C>> } = {
   'bridge:getSnapshot': noPayload,
   'bridge:start': validateStart,
@@ -299,6 +459,18 @@ const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<Reque
   'bridge:setDefaultProject': validateSetDefault,
   'bridge:getJournal': validateGetJournal,
   'bridge:getJournalEntry': validateGetJournalEntry,
+  'workflow:getSnapshot': noPayload,
+  'workflow:list': noPayload,
+  'workflow:get': validateWorkflowIdRequest,
+  'workflow:getEvents': validateWorkflowEvents,
+  'workflow:getAttempt': validateWorkflowAttempt,
+  'workflow:getJournal': validateWorkflowIdRequest,
+  'workflow:listDefinitions': noPayload,
+  'workflow:start': validateWorkflowStart,
+  'workflow:pause': validateWorkflowIdRequest,
+  'workflow:resume': validateWorkflowIdRequest,
+  'workflow:stop': validateWorkflowIdRequest,
+  'workflow:answer': validateWorkflowAnswer,
 };
 
 export function validateRequest<C extends InvokeChannel>(channel: C, payload: unknown): Validation<RequestOf<C>> {
