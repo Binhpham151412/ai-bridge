@@ -140,6 +140,21 @@ export function ExecutionPanel({
         </dd>
         <dt>Bytes</dt>
         <dd className="mono">{record.input.bytes}</dd>
+        {agent === 'claude' && (
+          <>
+            <dt>Model</dt>
+            <dd data-testid="exec-model">
+              {record.model ? (
+                <>
+                  yêu cầu: <span className="mono small">{record.model.requested ?? 'theo cấu hình CLI (không --model)'}</span> · CLI báo đã dùng:{' '}
+                  <span className="mono small">{record.model.reported ?? 'UNKNOWN'}</span>
+                </>
+              ) : (
+                'UNKNOWN (record cũ)'
+              )}
+            </dd>
+          </>
+        )}
         <dt>Permission policy</dt>
         <dd data-testid="exec-permission">
           {record.permission ? (

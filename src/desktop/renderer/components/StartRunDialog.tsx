@@ -123,7 +123,7 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
         <p className="hint">Timeout là cấu hình Core của project (Settings). Core chạy System Check trước khi bắt đầu và từ chối nếu chưa PASS.</p>
         {config && (
           <p className={Object.values(config.permissions).includes('bypass') ? 'warn' : 'hint'} role="note" data-testid="start-permissions">
-            Permissions — Claude: {config.permissions.claude}, Codex: {config.permissions.codex} (Settings → AI Execution Permissions).
+            Claude model: {config.models?.claude ?? 'theo cấu hình Claude CLI'} · Permissions — Claude: {config.permissions.claude}, Codex: {config.permissions.codex} (Settings).
             {Object.values(config.permissions).includes('bypass') ? ` ${BYPASS_WARNING}` : ''}
           </p>
         )}

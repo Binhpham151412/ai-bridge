@@ -5,9 +5,6 @@
 // FAKE_CLAUDE_USAGE=1 adds a usage object to the result event; FAKE_CLAUDE_REPORT_EXTRA is
 // appended verbatim to the report (M4.2 journal tests).
 //
-// FAKE_CLAUDE_USAGE=1 adds a usage object to the result event; FAKE_CLAUDE_REPORT_EXTRA is
-// appended verbatim to the report (M4.2 journal tests).
-//
 // Behaviour is selected by the FAKE_CLAUDE_MODE env var:
 //   ok               - normal run: reads stdin, emits stream-json init/result
 //                       events echoing back the --session-id/--resume flag,
@@ -18,6 +15,8 @@
 //   wrong-session-id   - emits init/result events with a session_id that does
 //                       not match the one requested via --session-id/--resume.
 //   bad-report          - like "ok", but the written report omits REPORT_STATUS.
+//   answer-in-chat      - like "ok" (exit 0, result event), but writes NO report and
+//                       ends with a question — the real 2026-10-02_001 incident.
 //   hang                - never exits (used to test the caller's timeout).
 //
 // Flags read (mirrors the real `claude -p` CLI):
@@ -110,7 +109,9 @@ if (mode === 'hang') {
 } else {
   const prompt = readStdin();
   const { reportFile, sessionId, iteration } = readContract();
-  if (reportFile) {
+  // Like the real CLI, the init event names the model in use (here: whatever --model asked for).
+  const reportedModel = flagValue('--model') ?? 'fake-cli-default-model';
+  if (reportFile && mode !== 'answer-in-chat') {
     const statusLine = mode === 'bad-report' ? '' : 'REPORT_STATUS: COMPLETE\n';
     writeFileSync(
       reportFile,
@@ -118,13 +119,14 @@ if (mode === 'hang') {
       'utf8',
     );
   }
-  emit({ type: 'system', subtype: 'init', session_id: sessionIdToReport(), resumed });
+  emit({ type: 'system', subtype: 'init', session_id: sessionIdToReport(), resumed, model: reportedModel });
   emit({ type: 'debug_stdin', text: prompt });
   if (appendSystemPrompt !== undefined) emit({ type: 'debug_system_prompt', text: appendSystemPrompt });
   if (permissionMode !== undefined) emit({ type: 'debug_permission_mode', text: permissionMode });
   if (allowedTools !== undefined) emit({ type: 'debug_allowed_tools', tools: allowedTools });
   if (disallowedTools !== undefined) emit({ type: 'debug_disallowed_tools', tools: disallowedTools });
   const usage = process.env.FAKE_CLAUDE_USAGE === '1' ? { usage: { input_tokens: 10, cache_creation_input_tokens: 20, cache_read_input_tokens: 30, output_tokens: 40 } } : {};
-  emit({ type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionIdToReport(), num_turns: 1, ...usage });
+  const resultText = mode === 'answer-in-chat' ? 'Could you clarify what step 7 was? That context is missing.' : 'ok';
+  emit({ type: 'result', subtype: 'success', is_error: false, result: resultText, session_id: sessionIdToReport(), num_turns: 1, ...usage });
   process.exit(0);
 }

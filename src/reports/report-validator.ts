@@ -34,6 +34,20 @@ export interface ReportValidatorOptions {
 }
 
 const HEADER = '# AI Bridge Report';
+
+/**
+ * The SESSION_ID a report claims (header area only, before the first `## ` section), or
+ * null when there is none. Used to tell which AI Bridge session a file at the shared
+ * `reports/NNN-report.md` path belongs to — never to validate it (validateBuffer does that).
+ */
+export function reportSessionIdOf(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    if (/^##\s/.test(line)) break;
+    const m = /^SESSION_ID:\s*(\S+)\s*$/.exec(line);
+    if (m) return m[1];
+  }
+  return null;
+}
 const FIELD_NAMES = ['SESSION_ID', 'ITERATION', 'REPORT_STATUS', 'NEXT_ACTION'] as const;
 const REQUIRED_SECTIONS = ['TASK', 'CHANGES', 'TESTS', 'ISSUES', 'NEXT_RECOMMENDATION'] as const;
 const NEXT_ACTIONS: readonly string[] = ['CONTINUE', 'DONE', 'NEED_HUMAN'];

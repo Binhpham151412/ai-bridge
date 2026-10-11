@@ -21,6 +21,8 @@ import type {
   WorkflowIdRequest,
   WorkflowPanelSnapshot,
   WorkflowStartRequest,
+  ProjectHistoryIdRequest,
+  ProjectSetPinnedRequest,
 } from '../shared/ipc-contract.ts';
 
 /** The minimal slice of Electron's `ipcRenderer` this API needs — lets the API be
@@ -75,6 +77,12 @@ export interface AiBridgeApi {
   workflowResume(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:resume'>>;
   workflowStop(request: WorkflowIdRequest): Promise<ResponseOf<'workflow:stop'>>;
   workflowAnswer(request: WorkflowAnswerRequest): Promise<ResponseOf<'workflow:answer'>>;
+  /** docs/63: recent projects. Entries are named by id; Main owns paths and the folder picker. */
+  getProjectHistory(): Promise<ResponseOf<'project:getHistory'>>;
+  openRecentProject(request: ProjectHistoryIdRequest): Promise<ResponseOf<'project:openRecent'>>;
+  setProjectPinned(request: ProjectSetPinnedRequest): Promise<ResponseOf<'project:setPinned'>>;
+  removeRecentProject(request: ProjectHistoryIdRequest): Promise<ResponseOf<'project:removeRecent'>>;
+  locateProject(request: ProjectHistoryIdRequest): Promise<ResponseOf<'project:locate'>>;
   onWorkflowEvent(listener: (event: WorkflowEvent) => void): () => void;
   onWorkflowSnapshot(listener: (snapshot: WorkflowPanelSnapshot) => void): () => void;
 }
@@ -129,6 +137,11 @@ export function createBridgeApi(ipc: IpcRendererLike): AiBridgeApi {
     workflowResume: (request: WorkflowIdRequest) => call('workflow:resume', request),
     workflowStop: (request: WorkflowIdRequest) => call('workflow:stop', request),
     workflowAnswer: (request: WorkflowAnswerRequest) => call('workflow:answer', request),
+    getProjectHistory: () => call('project:getHistory'),
+    openRecentProject: (request: ProjectHistoryIdRequest) => call('project:openRecent', request),
+    setProjectPinned: (request: ProjectSetPinnedRequest) => call('project:setPinned', request),
+    removeRecentProject: (request: ProjectHistoryIdRequest) => call('project:removeRecent', request),
+    locateProject: (request: ProjectHistoryIdRequest) => call('project:locate', request),
     onWorkflowEvent: (listener: (event: WorkflowEvent) => void) => subscribe('workflow:event', listener),
     onWorkflowSnapshot: (listener: (snapshot: WorkflowPanelSnapshot) => void) => subscribe('workflow:snapshot', listener),
   });

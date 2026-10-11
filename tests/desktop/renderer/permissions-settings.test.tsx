@@ -8,6 +8,7 @@ import { CLAUDE_PERMISSION_CAPABILITY } from '../../../src/adapters/claude/claud
 import { CODEX_PERMISSION_CAPABILITY } from '../../../src/adapters/chatgpt/codex-cli-adapter.ts';
 import type { ExecutionRecord } from '../../../src/core/execution/execution-record.ts';
 import type { SettingsView } from '../../../src/desktop/shared/ipc-contract.ts';
+import { act } from 'react';
 import { FakeMain, click, makeSnapshot, q, render } from './harness.tsx';
 
 // M5.10.1 — Settings → "AI Execution Permissions" and the per-execution audit row.
@@ -16,7 +17,7 @@ function settings(permissions: { claude: 'ask' | 'bypass'; codex: 'ask' | 'bypas
   return {
     app: { defaultProjectPath: null },
     project: {
-      config: { maxIterations: 10, claudeTimeoutMs: 1_800_000, codexTimeoutMs: 600_000, reportMaxBytes: 1_048_576, stopOnUncommittedChanges: false, requireGitRepository: false, permissions },
+      config: { maxIterations: 10, claudeTimeoutMs: 1_800_000, codexTimeoutMs: 600_000, reportMaxBytes: 1_048_576, stopOnUncommittedChanges: false, requireGitRepository: false, permissions, models: { claude: null } },
       errors: [],
       path: 'D:\\work\\demo\\.ai-bridge\\config.json',
       exists: false,
@@ -121,6 +122,58 @@ test('the execution panel answers "why did this call not ask?" from the record �
       </BridgeProvider>,
     );
     assert.match(q(view.container, 'exec-permission')!.textContent!, /^UNKNOWN/);
+  } finally {
+    await view.unmount();
+  }
+});
+
+// docs/62 — Claude model picker (same Settings form, same validated save channel).
+
+function setSelect(el: Element, value: string): void {
+  const W = (globalThis as unknown as { window: { Event: typeof Event } }).window;
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new W.Event('input', { bubbles: true }));
+  el.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+
+test('Settings → Claude model: default is the CLI setting; picking Opus 5.5 and saving sends models.claude', async () => {
+  const { main, container, unmount } = await openSettings(settings({ claude: 'bypass', codex: 'bypass' }));
+  try {
+    const select = q(container, 'model-claude-select') as HTMLSelectElement;
+    assert.ok(select);
+    assert.equal(select.value, '', 'default: no --model (the Claude CLI decides)');
+    await act(async () => setSelect(select, 'claude-opus-5-5'));
+    await click([...container.querySelectorAll('button[type="submit"]')].find((b) => b.textContent === 'Lưu cấu hình'));
+    const sent = (main.invoked.find((c) => c.channel === 'bridge:saveProjectConfig')!.args[0] as { config: Record<string, unknown> }).config;
+    assert.deepEqual(sent.models, { claude: 'claude-opus-5-5' });
+  } finally {
+    await unmount();
+  }
+});
+
+test('Settings → Claude model: "Khác…" reveals a free-text field; a saved custom model is shown in it', async () => {
+  const view = settings({ claude: 'bypass', codex: 'bypass' });
+  view.project!.config.models = { claude: 'opus[1m]' };
+  const { container, unmount } = await openSettings(view);
+  try {
+    assert.equal((q(container, 'model-claude-select') as HTMLSelectElement).value, '__custom__');
+    assert.equal((q(container, 'model-claude-custom') as HTMLInputElement).value, 'opus[1m]');
+  } finally {
+    await unmount();
+  }
+});
+
+test('the execution panel shows the requested model and the one the CLI reported', async () => {
+  const main = new FakeMain(makeSnapshot());
+  const rec: ExecutionRecord = { ...RECORD, model: { requested: 'claude-opus-5-5', reported: 'claude-opus-5-5' } };
+  const view = await render(
+    <BridgeProvider api={main.api}>
+      <ExecutionPanel runId="2026-10-01_001" agent="claude" iteration={1} execution={{ record: rec, effectiveStatus: 'COMPLETED' }} inputArtifact={null} isLiveStep={false} onViewInput={() => {}} />
+    </BridgeProvider>,
+  );
+  try {
+    assert.match(q(view.container, 'exec-model')!.textContent!, /yêu cầu: claude-opus-5-5 · CLI báo đã dùng: claude-opus-5-5/);
   } finally {
     await view.unmount();
   }

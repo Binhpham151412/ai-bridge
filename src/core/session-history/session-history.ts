@@ -3,6 +3,8 @@ import path from 'node:path';
 import { sha256Text } from '../integrity/integrity.ts';
 import { EVENT_TYPES, type BridgeEvent } from '../observability/events.ts';
 import { CodexResponseParser } from '../../reports/codex-response-parser.ts';
+import { reportSessionIdOf } from '../../reports/report-validator.ts';
+import { supersededReportPath } from '../../reports/stale-report.ts';
 import { redactSecrets } from '../security/redact.ts';
 import type { ExecutionAgent, ExecutionRecord, ExecutionStatus } from '../execution/execution-record.ts';
 
@@ -175,20 +177,26 @@ function extractReportFromCodexInput(codexInput: string): string | null {
  * `NNN-integrity.json`, or verbatim inside what was sent to Codex); otherwise the report
  * as it was actually sent to Codex is recovered from `NNN-chatgpt-input.md`.
  */
-async function resolveReport(reportPath: string, codexInput: ArtifactText | null, integrity: Record<string, unknown> | null): Promise<ReportArtifact> {
+async function resolveReport(reportPath: string, codexInput: ArtifactText | null, integrity: Record<string, unknown> | null, runId: string): Promise<ReportArtifact> {
   const recordedHash = typeof integrity?.reportHash === 'string' ? integrity.reportHash : null;
   const file = await readArtifact(reportPath);
+  // This session's own report may have been moved aside by a later session's stale-report
+  // isolation (src/reports/stale-report.ts) — it is still this session's, bytes unchanged.
+  const moved = await readArtifact(supersededReportPath(path.dirname(reportPath), runId, path.basename(reportPath)));
 
-  if (file) {
-    const matchesHash = recordedHash !== null && file.sha256 === recordedHash;
-    const insideCodexInput = codexInput !== null && !codexInput.truncated && !file.truncated && codexInput.text.includes(file.text);
+  for (const candidate of [file, moved]) {
+    if (!candidate) continue;
+    const matchesHash = recordedHash !== null && candidate.sha256 === recordedHash;
+    const insideCodexInput = codexInput !== null && !codexInput.truncated && !candidate.truncated && codexInput.text.includes(candidate.text);
     if (matchesHash || (recordedHash === null && insideCodexInput)) {
-      return { availability: 'AVAILABLE', source: 'REPORT_FILE', verification: 'VERIFIED', ...file };
+      return { availability: 'AVAILABLE', source: 'REPORT_FILE', verification: 'VERIFIED', ...candidate };
     }
-    if (recordedHash === null && codexInput === null) {
-      // Claude wrote a report but Codex never received it (e.g. the run stopped at
-      // REPORT_VALIDATED) — nothing to verify against yet; shown, flagged as such.
-      return { availability: 'AVAILABLE', source: 'REPORT_FILE', verification: 'UNVERIFIED', ...file };
+    // Claude wrote a report but Codex never received it (e.g. the run stopped at
+    // REPORT_VALIDATED or the report failed validation) — nothing to verify against yet; shown,
+    // flagged as such — but ONLY if the file says it is this session's report: the shared path
+    // can hold another session's report (e.g. Claude wrote nothing this time).
+    if (recordedHash === null && codexInput === null && reportSessionIdOf(candidate.text) === runId) {
+      return { availability: 'AVAILABLE', source: 'REPORT_FILE', verification: 'UNVERIFIED', ...candidate };
     }
   }
 
@@ -207,6 +215,12 @@ async function resolveReport(reportPath: string, codexInput: ArtifactText | null
     };
   }
 
+  if (file && codexInput === null) {
+    // Nothing of this session's report reached Codex and the file at the path is not this
+    // session's: this iteration produced no report of its own.
+    const owner = reportSessionIdOf(file.text);
+    return { availability: 'MISSING', path: reportPath, note: `No report was produced for this iteration (the file at this path belongs to ${owner ? `session ${owner}` : 'another session'}).` };
+  }
   if (file) {
     return { availability: 'OVERWRITTEN', path: reportPath, note: "The report file on disk belongs to a later session (same iteration number) and this session's copy could not be recovered." };
   }
@@ -323,7 +337,7 @@ export async function readSessionArtifacts(aiBridgeDir: string, eventsPath: stri
     iterations.push({
       iteration: n,
       claudePrompt: await readArtifact(path.join(sessionDir, `${nnn}-claude-prompt.md`)),
-      report: await resolveReport(path.join(aiBridgeDir, 'reports', `${nnn}-report.md`), codexInput, integrity),
+      report: await resolveReport(path.join(aiBridgeDir, 'reports', `${nnn}-report.md`), codexInput, integrity, runId),
       codexInput,
       codexResponse,
       extractedPrompt: await readArtifact(path.join(sessionDir, `${nnn}-extracted-prompt.md`)),

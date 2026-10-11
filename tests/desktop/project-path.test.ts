@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { validateProjectPath } from '../../src/desktop/main/project-path.ts';
@@ -31,15 +31,16 @@ test('validateProjectPath rejects non-strings, relative paths, UNC shares, files
   }
 });
 
-test('app settings: missing/corrupt file → defaults; only defaultProjectPath is ever persisted', async () => {
+test('app settings: missing/corrupt file → defaults; only defaultProjectPath + recentProjects are ever persisted', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'ai-bridge-settings-'));
   const file = path.join(dir, 'settings.json');
   try {
-    assert.deepEqual(await loadAppSettings(file), { defaultProjectPath: null });
+    assert.deepEqual(await loadAppSettings(file), { defaultProjectPath: null, recentProjects: [] });
     await writeFile(file, '{not json');
-    assert.deepEqual(await loadAppSettings(file), { defaultProjectPath: null });
-    await saveAppSettings(file, { defaultProjectPath: 'D:\\proj', apiKey: 'nope' } as never);
-    assert.deepEqual(await loadAppSettings(file), { defaultProjectPath: 'D:\\proj' });
+    assert.deepEqual(await loadAppSettings(file), { defaultProjectPath: null, recentProjects: [] });
+    await saveAppSettings(file, { defaultProjectPath: 'D:\\proj', recentProjects: [], apiKey: 'nope' } as never);
+    assert.deepEqual(await loadAppSettings(file), { defaultProjectPath: 'D:\\proj', recentProjects: [] });
+    assert.deepEqual(Object.keys(JSON.parse(await readFile(file, 'utf8'))).sort(), ['defaultProjectPath', 'recentProjects']);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
