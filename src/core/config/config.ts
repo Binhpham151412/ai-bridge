@@ -9,6 +9,16 @@ export interface AiBridgeConfig {
   requireGitRepository: boolean;
   /** M5.10.1: per-provider permission policy (docs/61). Absent in a file → `bypass`. */
   permissions: ProviderPermissionSettings;
+  /** Model per provider (docs/62). `null` = no `--model` flag: the CLI's own setting decides. */
+  models: { claude: string | null };
+}
+
+/** A model alias or full id as the CLI accepts it (`opus`, `claude-opus-5-5`, `opus[1m]`):
+ * never starts with `-` (it must not read as a flag), no spaces, at most 100 characters. */
+export const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,99}$/;
+
+export function isValidModelName(value: unknown): value is string {
+  return typeof value === 'string' && MODEL_NAME_PATTERN.test(value);
 }
 
 export const DEFAULT_CONFIG: AiBridgeConfig = {
@@ -19,6 +29,7 @@ export const DEFAULT_CONFIG: AiBridgeConfig = {
   stopOnUncommittedChanges: false,
   requireGitRepository: false,
   permissions: defaultProviderPermissions(),
+  models: { claude: null },
 };
 
 export interface ValidateConfigResult {
@@ -36,7 +47,8 @@ export const MAX_RUN_ITERATIONS = 100;
 const MAX_ITERATIONS_CAP = MAX_RUN_ITERATIONS;
 const NUMBER_FIELDS = ['maxIterations', 'claudeTimeoutMs', 'codexTimeoutMs', 'reportMaxBytes'] as const;
 const BOOLEAN_FIELDS = ['stopOnUncommittedChanges', 'requireGitRepository'] as const;
-const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS, 'permissions'];
+const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS, 'permissions', 'models'];
+const MODEL_PROVIDERS = ['claude'] as const;
 
 function isPositiveInteger(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
@@ -55,7 +67,7 @@ export function validateConfig(raw: unknown): ValidateConfigResult {
     if (!KNOWN_FIELDS.includes(key)) errors.push(`Unknown config field: "${key}"`);
   }
 
-  const config: AiBridgeConfig = { ...DEFAULT_CONFIG, permissions: defaultProviderPermissions() };
+  const config: AiBridgeConfig = { ...DEFAULT_CONFIG, permissions: defaultProviderPermissions(), models: { claude: null } };
 
   for (const field of NUMBER_FIELDS) {
     if (!(field in obj)) continue;
@@ -90,6 +102,19 @@ export function validateConfig(raw: unknown): ValidateConfigResult {
         if (!isPermissionProvider(provider)) errors.push(`Unknown permissions provider: "${provider}"`);
         else if (!isPermissionPolicy(policy)) errors.push(`permissions.${provider} must be one of ${PERMISSION_POLICIES.join(', ')}, got ${JSON.stringify(policy)}`);
         else config.permissions[provider] = policy;
+      }
+    }
+  }
+
+  if ('models' in obj) {
+    const v = obj.models;
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+      errors.push(`models must be an object like {"claude": "claude-opus-5-5"}, got ${JSON.stringify(v)}`);
+    } else {
+      for (const [provider, model] of Object.entries(v as Record<string, unknown>)) {
+        if (!(MODEL_PROVIDERS as readonly string[]).includes(provider)) errors.push(`Unknown models provider: "${provider}" (only claude is configurable)`);
+        else if (model !== null && !isValidModelName(model)) errors.push(`models.${provider} must be null (use the CLI's setting) or a model name like "opus" or "claude-opus-5-5", got ${JSON.stringify(model)}`);
+        else config.models.claude = model as string | null;
       }
     }
   }

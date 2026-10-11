@@ -3,6 +3,7 @@ import type { PermissionPolicy, ProviderPermissionSettings } from '../../../core
 import type { SettingsView } from '../../shared/ipc-contract.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
 import { Card, EmptyState } from './common.tsx';
+import { RecentProjects } from './RecentProjects.tsx';
 
 type NumberField = 'maxIterations' | 'claudeTimeoutMs' | 'codexTimeoutMs' | 'reportMaxBytes';
 const NUMBER_FIELDS: { key: NumberField; label: string; hint: string; minutes?: boolean }[] = [
@@ -20,6 +21,20 @@ const BOOLEAN_FIELDS = [
 export const BYPASS_STATEMENT = 'Bypass permissions allows the AI provider to execute supported operations without interactive permission prompts.';
 export const BYPASS_WARNING =
   'Permission bypass is enabled by default. AI providers may execute commands and access project resources without interactive approval.';
+
+/** docs/62 — Claude model choices. '' = no --model flag (the Claude CLI's own setting). The
+ * aliases resolve inside the installed CLI (an older CLI may map them to older models); full
+ * ids are sent as-is. Whether the account can use a model is only known once a run reports it. */
+const CLAUDE_MODEL_PRESETS: { value: string; label: string }[] = [
+  { value: '', label: 'Theo cấu hình Claude CLI (mặc định — không truyền --model)' },
+  { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 (claude-opus-5-5)' },
+  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5 (claude-sonnet-5)' },
+  { value: 'claude-fable-5-1', label: 'Claude Fable 5.1 (claude-fable-5-1)' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (claude-haiku-4-5-20251001)' },
+  { value: 'opus', label: 'Alias "opus" (CLI tự chọn bản Opus mới nhất mà nó biết)' },
+  { value: 'sonnet', label: 'Alias "sonnet" (CLI tự chọn bản Sonnet mới nhất mà nó biết)' },
+];
+const CUSTOM_MODEL = '__custom__';
 
 /** "= 30 phút" next to a millisecond field, computed from what is typed (display only). */
 function minutesOf(value: string | boolean | undefined): string | null {
@@ -39,6 +54,9 @@ export function Settings() {
   const [view, setView] = useState<SettingsView | null>(null);
   const [draft, setDraft] = useState<Record<string, string | boolean>>({});
   const [permissions, setPermissions] = useState<ProviderPermissionSettings | null>(null);
+  /** '' = no --model (CLI's own setting); null until the config is loaded. */
+  const [claudeModel, setClaudeModel] = useState<string | null>(null);
+  const [customModel, setCustomModel] = useState(false);
   const [reload, setReload] = useState(0);
   const projectPath = snapshot?.project?.path ?? null;
 
@@ -57,6 +75,9 @@ export function Settings() {
         }
         setDraft(Object.fromEntries(scalars));
         setPermissions({ ...cfg.permissions });
+        const model = cfg.models?.claude ?? '';
+        setClaudeModel(model);
+        setCustomModel(!CLAUDE_MODEL_PRESETS.some((p) => p.value === model));
       }
     });
     return () => {
@@ -70,6 +91,8 @@ export function Settings() {
     const config: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(draft)) config[k] = typeof v === 'boolean' ? v : v.trim() === '' ? v : Number(v);
     if (permissions) config.permissions = permissions;
+    // Core validates the name; an empty field means "no --model".
+    if (claudeModel !== null) config.models = { claude: claudeModel.trim() === '' ? null : claudeModel.trim() };
     const res = await runAction(() => api.saveProjectConfig({ config }));
     if (res.ok) setReload((n) => n + 1);
   };
@@ -107,7 +130,11 @@ export function Settings() {
             Bỏ mặc định
           </button>
         </div>
-        <p className="hint">Khi mở app, project mặc định được mở và Core kiểm tra session dở dang (recovery).</p>
+        <p className="hint">
+          Khi mở app: project mặc định (nếu đã đặt), nếu không thì project mở gần nhất, được mở lại tự động và Core kiểm tra session dở dang (recovery).
+        </p>
+        <RecentProjects />
+        <p className="hint">Xoá khỏi lịch sử chỉ xoá khỏi danh sách của AI Bridge — không xoá thư mục project.</p>
       </Card>
 
       <Card title="Run configuration (.ai-bridge/config.json)">
@@ -139,6 +166,40 @@ export function Settings() {
                 {f.label}
               </label>
             ))}
+            {claudeModel !== null && (
+              <section className="models" data-testid="models-section" aria-labelledby="models-title">
+                <h3 className="form-section" id="models-title">
+                  Claude model
+                </h3>
+                <label className="field">
+                  <span>Model cho Claude Code CLI (executor)</span>
+                  <select
+                    value={customModel ? CUSTOM_MODEL : claudeModel}
+                    onChange={(e) => {
+                      if (e.target.value === CUSTOM_MODEL) setCustomModel(true);
+                      else {
+                        setCustomModel(false);
+                        setClaudeModel(e.target.value);
+                      }
+                    }}
+                    data-testid="model-claude-select"
+                  >
+                    {CLAUDE_MODEL_PRESETS.map((p) => (
+                      <option key={p.value || 'cli-default'} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_MODEL}>Khác… (nhập tên model)</option>
+                  </select>
+                  {customModel && (
+                    <input type="text" value={claudeModel} onChange={(e) => setClaudeModel(e.target.value)} placeholder="vd. claude-opus-5-5 hoặc opus" data-testid="model-claude-custom" />
+                  )}
+                  <small className="hint">
+                    AI Bridge truyền <code>--model &lt;tên&gt;</code> cho mọi lần gọi Claude của project này. Model có dùng được với tài khoản hay không chỉ biết khi chạy: mỗi execution ghi lại model đã yêu cầu và model CLI báo đã dùng. Codex vẫn theo <code>~/.codex/config.toml</code>.
+                  </small>
+                </label>
+              </section>
+            )}
             {permissions && (
               <section className="permissions" data-testid="permissions-section" aria-labelledby="permissions-title">
                 <h3 className="form-section" id="permissions-title">

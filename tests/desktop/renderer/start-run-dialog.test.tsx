@@ -21,6 +21,7 @@ const SETTINGS: SettingsView = {
       stopOnUncommittedChanges: false,
       requireGitRepository: false,
       permissions: { claude: 'bypass', codex: 'bypass' },
+      models: { claude: null },
     },
     errors: [],
     path: 'D:\\work\\demo\\.ai-bridge\\config.json',

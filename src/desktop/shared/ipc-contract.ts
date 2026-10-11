@@ -45,8 +45,43 @@ export const INVOKE_CHANNELS = [
   'workflow:resume',
   'workflow:stop',
   'workflow:answer',
+  // docs/63: recent-project history — appended; payloads carry a history id, never a path.
+  'project:getHistory',
+  'project:openRecent',
+  'project:setPinned',
+  'project:removeRecent',
+  'project:locate',
 ] as const;
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];
+
+/** docs/63: one row of the recent-project list, as Main reports it (status checked in Main). */
+export interface ProjectHistoryItem {
+  id: string;
+  name: string;
+  path: string;
+  lastOpenedAt: string;
+  pinned: boolean;
+  /** MISSING: the folder no longer exists / is not a usable directory (checked when listed). */
+  status: 'AVAILABLE' | 'MISSING';
+  /** The project currently open in this window. */
+  active: boolean;
+}
+
+export interface ProjectHistoryView {
+  /** Pinned first, then recent; most recently opened first within each group. */
+  entries: ProjectHistoryItem[];
+  /** What happened at startup: RESTORED (opened automatically), MISSING (the last project
+   * could not be opened — shown in the list), NONE (nothing to restore). */
+  restore: { outcome: 'RESTORED' | 'MISSING' | 'NONE'; name: string | null; path: string | null; reason: string | null };
+}
+
+export interface ProjectHistoryIdRequest {
+  id: string;
+}
+export interface ProjectSetPinnedRequest {
+  id: string;
+  pinned: boolean;
+}
 
 /** Main → Renderer pushes. The renderer can only listen on these, never send. */
 export const PUSH_CHANNELS = ['bridge:event', 'bridge:snapshot', 'workflow:event', 'workflow:snapshot'] as const;
@@ -241,6 +276,11 @@ export interface InvokeContract {
   'workflow:resume': { request: WorkflowIdRequest; response: ActionResponse };
   'workflow:stop': { request: WorkflowIdRequest; response: ActionResponse };
   'workflow:answer': { request: WorkflowAnswerRequest; response: ActionResponse };
+  'project:getHistory': { request: void; response: DataResponse<ProjectHistoryView> };
+  'project:openRecent': { request: ProjectHistoryIdRequest; response: ActionResponse };
+  'project:setPinned': { request: ProjectSetPinnedRequest; response: ActionResponse };
+  'project:removeRecent': { request: ProjectHistoryIdRequest; response: ActionResponse };
+  'project:locate': { request: ProjectHistoryIdRequest; response: ActionResponse };
 }
 
 export type RequestOf<C extends InvokeChannel> = InvokeContract[C]['request'];
@@ -441,6 +481,26 @@ function validateWorkflowAnswer(payload: unknown): Validation<WorkflowAnswerRequ
   return { ok: true, value: { workflowId, answer: answer as WorkflowAnswerRequest['answer'] } };
 }
 
+/** docs/63: a history id is the 16-hex SHA-256 prefix Main derived from the path. */
+const PROJECT_HISTORY_ID = /^[0-9a-f]{16}$/;
+
+function validateProjectHistoryId(payload: unknown): Validation<ProjectHistoryIdRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['id']);
+  if (extra) return { ok: false, reason: extra };
+  if (typeof payload.id !== 'string' || !PROJECT_HISTORY_ID.test(payload.id)) return { ok: false, reason: 'id must be a project history id' };
+  return { ok: true, value: { id: payload.id } };
+}
+
+function validateProjectSetPinned(payload: unknown): Validation<ProjectSetPinnedRequest> {
+  if (!isPlainObject(payload)) return { ok: false, reason: 'payload must be an object' };
+  const extra = onlyKeys(payload, ['id', 'pinned']);
+  if (extra) return { ok: false, reason: extra };
+  if (typeof payload.id !== 'string' || !PROJECT_HISTORY_ID.test(payload.id)) return { ok: false, reason: 'id must be a project history id' };
+  if (typeof payload.pinned !== 'boolean') return { ok: false, reason: 'pinned must be a boolean' };
+  return { ok: true, value: { id: payload.id, pinned: payload.pinned } };
+}
+
 const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<RequestOf<C>> } = {
   'bridge:getSnapshot': noPayload,
   'bridge:start': validateStart,
@@ -471,6 +531,11 @@ const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<Reque
   'workflow:resume': validateWorkflowIdRequest,
   'workflow:stop': validateWorkflowIdRequest,
   'workflow:answer': validateWorkflowAnswer,
+  'project:getHistory': noPayload,
+  'project:openRecent': validateProjectHistoryId,
+  'project:setPinned': validateProjectSetPinned,
+  'project:removeRecent': validateProjectHistoryId,
+  'project:locate': validateProjectHistoryId,
 };
 
 export function validateRequest<C extends InvokeChannel>(channel: C, payload: unknown): Validation<RequestOf<C>> {

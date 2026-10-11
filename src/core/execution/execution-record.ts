@@ -3,6 +3,7 @@ import path from 'node:path';
 import { AtomicJsonWriter } from '../state-manager/atomic-json-writer.ts';
 import { redactSecrets } from '../security/redact.ts';
 import type { ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
+import type { StaleReportMove } from '../../reports/stale-report.ts';
 
 /**
  * One persisted record per CLI invocation (M4.1): `<sessionDir>/<NNN>-claude-execution.json`
@@ -160,6 +161,14 @@ export interface ExecutionRecord {
   /** M5.10.1: the permission policy this call ran under and the exact CLI flags it became.
    * Absent in pre-M5.10.1 records. */
   permission?: ExecutionPermission;
+  /** docs/62 (Claude only): the model AI Bridge asked for (`--model`; null = the CLI's own
+   * setting) and the model the CLI itself reported in its output (null = not reported).
+   * Absent in older records. */
+  model?: { requested: string | null; reported: string | null };
+  /** Claude only: a report an EARLIER session left at this iteration's shared report path,
+   * moved to `reports/superseded/` before this call started (it is never validated as this
+   * call's report). Absent when the path was free. */
+  staleReport?: StaleReportMove;
   updatedAt: string;
 }
 

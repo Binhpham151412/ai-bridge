@@ -947,6 +947,8 @@ export class BridgeEngine {
       maxIterations: o.config.maxIterations,
       ...(o.correlation !== undefined ? { correlation: o.correlation } : {}),
       permissions: { claude: o.permissions.claude.resolved, codex: o.permissions.codex.resolved },
+      // docs/62: null = no --model flag (the Claude CLI's own setting decides).
+      models: { claude: o.config.models.claude },
     });
 
     const orchestrator = new Orchestrator({
@@ -958,6 +960,7 @@ export class BridgeEngine {
       initialPrompt: o.initialPrompt,
       maxIterations: o.config.maxIterations,
       claudeTimeoutMs: o.config.claudeTimeoutMs,
+      claudeModel: o.config.models.claude,
       codexTimeoutMs: o.config.codexTimeoutMs,
       claudeAdapter: new ClaudeCodeCliAdapter({ executable: o.claudeExe, commandArgsPrefix: this.deps.claudeCommandArgsPrefix }),
       codexAdapter: new CodexCliAdapter({ executable: o.codexExe, commandArgsPrefix: this.deps.codexCommandArgsPrefix }),

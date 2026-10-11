@@ -55,6 +55,8 @@ export interface ClaudeRunOptions {
   appendSystemPrompt?: string;
   /** M5.10.1: the resolved provider-neutral policy; mapped by `claudePermissionArgs`. Omitted → no permission flag. */
   permissionPolicy?: PermissionPolicy;
+  /** docs/62: sent as `--model <model>`. Omitted → no flag: the CLI's own setting decides. */
+  model?: string;
   /** Sent as --allowedTools <a> <b> ... */
   allowedTools?: string[];
   /** Sent as --disallowedTools <a> <b> ... */
@@ -119,6 +121,25 @@ export function findReportedClaudeSessionId(stdout: string): string | null {
   return initId;
 }
 
+/** docs/62: the model the CLI says it used — the `system/init` event's `model`, else the first
+ * real assistant message's `message.model` (never the `<synthetic>` placeholder). Null when the
+ * CLI reported none; never inferred from what was requested. */
+export function findReportedClaudeModel(stdout: string): string | null {
+  let fromMessage: string | null = null;
+  for (const line of stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const e = JSON.parse(line) as { type?: unknown; subtype?: unknown; model?: unknown; message?: { model?: unknown } };
+      if (e.type === 'system' && e.subtype === 'init' && typeof e.model === 'string' && e.model !== '') return e.model;
+      const m = e.type === 'assistant' ? e.message?.model : undefined;
+      if (fromMessage === null && typeof m === 'string' && m !== '' && m !== '<synthetic>') fromMessage = m;
+    } catch {
+      // partial/garbled line
+    }
+  }
+  return fromMessage;
+}
+
 /** The `result` event's text — Claude's final message for this call — or null. */
 export function findClaudeFinalMessage(stdout: string): string | null {
   for (const line of stdout.split('\n').reverse()) {
@@ -160,6 +181,7 @@ export class ClaudeCodeCliAdapter {
     const args = [...this.commandArgsPrefix, '-p', '--output-format', 'stream-json', '--verbose', sessionFlag, options.sessionId];
     if (options.appendSystemPrompt !== undefined) args.push('--append-system-prompt', options.appendSystemPrompt);
     if (options.permissionPolicy !== undefined) args.push(...claudePermissionArgs(options.permissionPolicy));
+    if (options.model !== undefined) args.push('--model', options.model);
     if (options.allowedTools !== undefined) args.push('--allowedTools', ...options.allowedTools);
     if (options.disallowedTools !== undefined) args.push('--disallowedTools', ...options.disallowedTools);
 

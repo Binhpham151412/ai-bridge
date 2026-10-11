@@ -6,10 +6,10 @@ import { INVOKE_CHANNELS, type BridgeSnapshot, type WorkflowEvent, type Workflow
 import { readWorkflowActivity } from '../../hosts/workflow-read.ts';
 import type { WorkflowHostCommand, WorkflowHostControl } from '../../hosts/workflow-host-protocol.ts';
 import type { BridgeEvent } from '../../core/observability/events.ts';
-import { loadAppSettings, saveAppSettings, type AppSettings } from './app-settings.ts';
 import { forkChildHost, forkRunHost } from './fork-run-host.ts';
 import { createIpcRouter, createTrustedSenderCheck, type ChannelHandlers } from './ipc-router.ts';
-import { validateProjectPath } from './project-path.ts';
+import { ProjectHistoryService } from './project-history-service.ts';
+import type { ProjectInfo } from '../shared/ipc-contract.ts';
 import { RunController } from './run-controller.ts';
 import { WorkflowController } from './workflow-controller.ts';
 
@@ -30,8 +30,8 @@ app.enableSandbox();
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let mainWindow: BrowserWindow | null = null;
-let settingsFile = '';
-let appSettings: AppSettings = { defaultProjectPath: null };
+/** docs/63: recent projects + last-project restore; the single writer of userData/settings.json. */
+let history: ProjectHistoryService | null = null;
 
 const controller = new RunController({
   createEngine: (projectPath) => new BridgeEngine(projectPath),
@@ -67,14 +67,28 @@ controller.onEvent((event) => send('bridge:event', event));
 workflowController.onSnapshot((snapshot) => send('workflow:snapshot', snapshot));
 workflowController.onEvent((event) => send('workflow:event', event));
 
-async function openProject(candidate: string): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const validation = await validateProjectPath(candidate);
-  if (!validation.ok) return validation;
-  const result = await controller.setProject(validation.project);
+/** Opens an already-validated project in both controllers (validation + history: ProjectHistoryService). */
+async function openValidatedProject(project: ProjectInfo): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const result = await controller.setProject(project);
   if (!result.ok) return { ok: false, reason: result.error.message };
-  const workflows = await workflowController.setProject(validation.project);
+  const workflows = await workflowController.setProject(project);
   return workflows.ok ? { ok: true } : { ok: false, reason: workflows.error.message };
 }
+
+async function openProject(candidate: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!history) return { ok: false, reason: 'AI Bridge chưa sẵn sàng.' };
+  const opened = await history.open(candidate);
+  return opened.ok ? { ok: true } : opened;
+}
+
+/** Native folder picker — the only source of a path chosen by the user. */
+async function pickFolder(title: string, defaultPath?: string): Promise<string | null> {
+  if (!mainWindow) return null;
+  const picked = await dialog.showOpenDialog(mainWindow, { title, properties: ['openDirectory'], ...(defaultPath ? { defaultPath } : {}) });
+  return picked.canceled || picked.filePaths.length === 0 ? null : picked.filePaths[0];
+}
+
+const NOT_READY = { ok: false as const, error: { code: 'NOT_READY', title: 'Chưa sẵn sàng', message: 'AI Bridge chưa tải xong lịch sử project.' } };
 
 const handlers: ChannelHandlers = {
   'bridge:getSnapshot': async () => ({ ok: true, data: await controller.getSnapshot() }),
@@ -104,23 +118,29 @@ const handlers: ChannelHandlers = {
   'workflow:answer': (request) => workflowController.answer(request),
   'bridge:selectProject': async () => {
     if (!mainWindow) return { ok: false, error: { code: 'NO_WINDOW', title: 'Không có cửa sổ', message: 'Cửa sổ chính chưa sẵn sàng.' } };
-    const picked = await dialog.showOpenDialog(mainWindow, { title: 'Chọn thư mục project', properties: ['openDirectory'] });
-    if (picked.canceled || picked.filePaths.length === 0) return { ok: true, message: 'Đã hủy chọn project.' };
-    const opened = await openProject(picked.filePaths[0]);
+    const picked = await pickFolder('Chọn thư mục project');
+    if (picked === null) return { ok: true, message: 'Đã hủy chọn project.' };
+    const opened = await openProject(picked);
     return opened.ok ? { ok: true } : { ok: false, error: { code: 'INVALID_PROJECT', title: 'Project không hợp lệ', message: opened.reason } };
   },
   'bridge:getSettings': async () => ({
     ok: true,
-    data: { app: { defaultProjectPath: appSettings.defaultProjectPath }, project: await controller.getConfig(), logs: { maxFileBytes: MAX_LOG_FILE_BYTES } },
+    data: { app: { defaultProjectPath: history?.settings.defaultProjectPath ?? null }, project: await controller.getConfig(), logs: { maxFileBytes: MAX_LOG_FILE_BYTES } },
   }),
   'bridge:saveProjectConfig': (request) => controller.saveConfig(request.config),
   'bridge:setDefaultProject': async (request) => {
+    if (!history) return NOT_READY;
     const project = controller.getProject();
     if (!request.clear && !project) return { ok: false, error: { code: 'NO_PROJECT', title: 'Chưa chọn project', message: 'Mở một project trước khi đặt làm mặc định.' } };
-    appSettings = { defaultProjectPath: request.clear || !project ? null : project.path };
-    await saveAppSettings(settingsFile, appSettings);
+    await history.setDefaultProject(request.clear || !project ? null : project.path);
     return { ok: true, message: request.clear ? 'Đã bỏ project mặc định.' : 'Đã đặt project mặc định.' };
   },
+  // docs/63: recent projects. The renderer names entries by id only; Main resolves the path.
+  'project:getHistory': async () => (history ? { ok: true, data: await history.view() } : NOT_READY),
+  'project:openRecent': (request) => (history ? history.openRecent(request.id) : Promise.resolve(NOT_READY)),
+  'project:setPinned': (request) => (history ? history.setPinned(request.id, request.pinned) : Promise.resolve(NOT_READY)),
+  'project:removeRecent': (request) => (history ? history.remove(request.id) : Promise.resolve(NOT_READY)),
+  'project:locate': (request) => (history ? history.locate(request.id, (hint) => pickFolder('Tìm lại thư mục project', hint)) : Promise.resolve(NOT_READY)),
 };
 
 function registerIpc(): void {
@@ -253,11 +273,15 @@ void app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   hardenSession();
   registerIpc();
-  settingsFile = path.join(app.getPath('userData'), 'settings.json');
-  appSettings = await loadAppSettings(settingsFile);
-  // Recovery after a crash/restart starts here: opening the project makes the
-  // controller ask Core for status() and checkRecovery(); the renderer then shows
-  // RECOVERABLE / RECOVERY BLOCKED. Nothing is ever resumed automatically.
-  if (appSettings.defaultProjectPath) await openProject(appSettings.defaultProjectPath);
+  history = await ProjectHistoryService.load({
+    settingsFile: path.join(app.getPath('userData'), 'settings.json'),
+    openValidated: openValidatedProject,
+    activePath: () => controller.getProject()?.path ?? null,
+  });
+  // docs/63: reopen the default project (if one is set) or the last opened one. A folder that
+  // is gone never blocks startup — the renderer shows it as Missing in "Dự án gần đây".
+  // Recovery after a crash/restart starts here too: opening the project makes the controller
+  // ask Core for status() and checkRecovery(); nothing is ever resumed automatically.
+  await history.restoreAtStartup();
   createWindow();
 });

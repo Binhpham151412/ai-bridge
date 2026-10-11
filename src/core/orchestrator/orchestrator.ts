@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { CLAUDE_PERMISSION_CAPABILITY, claudePermissionArgs, type ClaudeCodeCliAdapter } from '../../adapters/claude/claude-code-cli-adapter.ts';
+import { CLAUDE_PERMISSION_CAPABILITY, claudePermissionArgs, findReportedClaudeModel, type ClaudeCodeCliAdapter } from '../../adapters/claude/claude-code-cli-adapter.ts';
 import { CODEX_PERMISSION_CAPABILITY, codexPermissionArgs, type CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
 import { resolvePermissionPolicy, type ProviderPermissionCapability, type ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
 import { ReportValidator } from '../../reports/report-validator.ts';
+import { isolateStaleReport, type StaleReportMove } from '../../reports/stale-report.ts';
 import { CodexResponseParser } from '../../reports/codex-response-parser.ts';
 import { buildReportContract, buildReviewerInput } from '../../prompts/templates.ts';
 import { checkEnvForApiKeys } from '../cost-guard.ts';
@@ -130,6 +131,8 @@ export interface OrchestratorOptions {
    * each adapter and recorded in every execution record. Omitted → resolved from the
    * product default (`bypass`). */
   permissionPolicies?: { claude: ResolvedPermissionPolicy; codex: ResolvedPermissionPolicy };
+  /** docs/62: Claude model (`--model`). Omitted/null → no flag: the CLI's own setting decides. */
+  claudeModel?: string | null;
   /** Called once per Claude/Codex invocation — the CLI wires this to the JSONL audit log. */
   onLog?: (entry: LogEntry) => void | Promise<void>;
   /** Called the instant Claude/Codex is actually spawned — the CLI wires this to keep a live PID in state. */
@@ -319,6 +322,7 @@ export class Orchestrator {
 
       const skipClaude = iteration === startIteration && o.resumeState?.skipClaudeThisIteration === true;
       let claudeDiagnostics: ExecutionDiagnostics | null = null;
+      let staleReport: StaleReportMove | null = null;
 
       if (!skipClaude) {
         const promptSha256 = sha256Text(prompt);
@@ -337,6 +341,13 @@ export class Orchestrator {
           promptSha256,
           promptBytes,
         });
+
+        // A file an earlier session left at the shared report path must never be validated as
+        // this call's report (it would fail as SESSION_MISMATCH and hide that Claude wrote
+        // nothing). Moved, never deleted. Not done when Claude is skipped (recovery re-sends
+        // the report already on disk). Best effort: if the move fails, validation still
+        // rejects the foreign file by its SESSION_ID.
+        staleReport = await isolateStaleReport(reportPath, o.reportsDir).catch(() => null);
 
         await push('CLAUDE_EXECUTING', iteration);
         const isResume = claudeSessionId !== null;
@@ -359,6 +370,7 @@ export class Orchestrator {
           inputBytes: promptBytes,
           permission: { ...this.permissions.claude, cliArgs: claudePermissionArgs(this.permissions.claude.resolved) },
         });
+        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: null }, ...(staleReport ? { staleReport } : {}) };
         await claudeExecWriter.write(claudeExec);
 
         const claudeResult = await o.claudeAdapter.run({
@@ -370,6 +382,7 @@ export class Orchestrator {
           env: o.claudeEnv,
           appendSystemPrompt: contract,
           permissionPolicy: this.permissions.claude.resolved,
+          ...(o.claudeModel ? { model: o.claudeModel } : {}),
           onSpawn: (pid) => {
             o.onPidUpdate?.({ adapter: 'claude', pid });
             claudeExec = { ...claudeExec, process: { ...claudeExec.process, pid, startedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
@@ -419,6 +432,7 @@ export class Orchestrator {
           },
           { stdoutFile: claudeStdoutPath, stderrFile: claudeStderrPath },
         );
+        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: findReportedClaudeModel(claudeResult.stdout) } };
         await claudeExecWriter.write(claudeExec);
         claudeDiagnostics = buildDiagnostics(claudeExec, { stdout: claudeResult.stdout, stderr: claudeResult.stderr, finalMessage: claudeResult.finalMessage }, claudeExecPath);
         if (isResume) {
@@ -474,7 +488,10 @@ export class Orchestrator {
       const reportResult = await this.validator.validateFile(reportPath, { sessionId: o.bridgeSessionId, iteration });
       if (!reportResult.valid) {
         await push('ERROR', iteration);
-        const detail = reportResult.errors.map((e) => `${e.code}: ${e.message}`).join('; ');
+        let detail = reportResult.errors.map((e) => `${e.code}: ${e.message}`).join('; ');
+        if (staleReport) {
+          detail += ` (an earlier report at this path${staleReport.sessionId ? ` from session ${staleReport.sessionId}` : ''} was moved to reports/${staleReport.movedTo} before Claude ran — it was not used)`;
+        }
         return finish('ERROR', 'REPORT_INVALID', detail, claudeSessionId, codexThreadId, claudeDiagnostics);
       }
       record.reportSha256 = reportResult.sha256;

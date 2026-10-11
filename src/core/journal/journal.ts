@@ -1,4 +1,5 @@
-import { readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { reportSessionIdOf } from '../../reports/report-validator.ts';
 import path from 'node:path';
 import type { ExecutionRecord, TokenUsage } from '../execution/execution-record.ts';
 import { readArtifact, type ArtifactText, type IterationArtifacts, type SessionArtifacts, type SessionSummary } from '../session-history/session-history.ts';
@@ -138,6 +139,14 @@ export function permissionLine(rec: ExecutionRecord | undefined): string {
   return `${p.resolved} — ${p.reason}; CLI: ${p.cliArgs.join(' ')}`;
 }
 
+/** docs/62: requested (`--model`, or the CLI's own setting) vs what the CLI reported using. */
+export function modelLine(rec: ExecutionRecord | undefined): string {
+  const m = rec?.model;
+  if (!m) return 'UNKNOWN (not recorded — execution recorded before model selection existed)';
+  const requested = m.requested === null ? "Claude CLI's own setting (no --model)" : `--model ${m.requested}`;
+  return `requested ${requested}; reported by the CLI: ${m.reported ?? 'UNKNOWN (not reported)'}`;
+}
+
 const EVIDENCE: Record<string, string> = {
   CONFIRMED_BY_CLI: 'confirmed by the CLI',
   REQUESTED_NOT_CONFIRMED: 'requested by AI Bridge, not confirmed by the CLI',
@@ -194,6 +203,7 @@ export function renderClaudeReport(runId: string, it: IterationArtifacts): strin
     `- Report SHA-256: ${report.sha256} (${hashNote}; source: ${report.source === 'REPORT_FILE' ? 'report file' : 'recovered from the input sent to Codex'})`,
     `- Token usage: ${usageLine(rec?.usage)}`,
     `- Permission policy: ${permissionLine(rec)}`,
+    `- Model: ${modelLine(rec)}`,
     '',
     '## Report (verbatim)',
     '',
@@ -510,10 +520,27 @@ async function exists(file: string): Promise<boolean> {
 }
 
 /** (Re)generates every journal file for one session from its artifacts. Idempotent. */
+/**
+ * A journal entry generated before stale-report isolation could embed ANOTHER session's report
+ * (it sat at the shared reports/ path when this run's Claude wrote nothing). Such a derived
+ * file is removed — only when its embedded report's SESSION_ID provably names another session;
+ * an entry holding this session's own report is kept (it may be the only surviving copy).
+ */
+async function removeMisattributedClaudeReport(file: string, runId: string): Promise<void> {
+  const text = await readFile(file, 'utf8').catch(() => null);
+  if (text === null) return;
+  const marker = text.indexOf('## Report (verbatim)');
+  if (marker === -1) return;
+  const owner = reportSessionIdOf(text.slice(marker + '## Report (verbatim)'.length));
+  if (owner !== null && owner !== runId) await rm(file, { force: true });
+}
+
 export async function buildJournal(sessionDir: string, summary: SessionSummary, artifacts: SessionArtifacts, projectName: string): Promise<void> {
   for (const it of artifacts.iterations) {
     const report = renderClaudeReport(artifacts.runId, it);
-    if (report !== null) await writeIfChanged(path.join(sessionDir, `${nnn(it.iteration)}-claude-report.md`), report);
+    const reportFile = path.join(sessionDir, `${nnn(it.iteration)}-claude-report.md`);
+    if (report !== null) await writeIfChanged(reportFile, report);
+    else await removeMisattributedClaudeReport(reportFile, artifacts.runId);
     const review = renderReview(artifacts.runId, it);
     if (review !== null) await writeIfChanged(path.join(sessionDir, `${nnn(it.iteration)}-review.md`), review);
   }

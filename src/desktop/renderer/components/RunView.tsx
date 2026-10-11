@@ -10,6 +10,7 @@ import { describeAgent, describeHeadline, roundSteps, roundTone, ROUND_STATE_LAB
 import { ActivityLog } from './ActivityLog.tsx';
 import { Card, Disclosure, EmptyState, ErrorPanel, Pill } from './common.tsx';
 import { RecoveryBanner } from './RecoveryBanner.tsx';
+import { RecentProjects } from './RecentProjects.tsx';
 import { RunControls } from './RunControls.tsx';
 import { StartRunDialog } from './StartRunDialog.tsx';
 import { RunTechnicalDetails, RunTechnicalOutput } from './TechnicalDetails.tsx';
@@ -192,6 +193,7 @@ export function RunView() {
         <button type="button" className="btn btn-primary" onClick={() => void runAction(() => api.selectProject())}>
           Chọn project…
         </button>
+        <RecentProjects />
       </EmptyState>
     );
   }
