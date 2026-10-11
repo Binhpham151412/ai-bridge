@@ -56,7 +56,7 @@ async function sessionDir(projectPath: string): Promise<string> {
 }
 
 const record = async (dir: string, name: string): Promise<ExecutionRecord> => JSON.parse(await readFile(path.join(dir, name), 'utf8'));
-const withPermissions = (claude: 'ask' | 'bypass', codex: 'ask' | 'bypass'): AiBridgeConfig => ({ ...DEFAULT_CONFIG, permissions: { claude, codex } });
+const withPermissions = (claude: 'ask' | 'bypass', codex: 'ask' | 'bypass'): AiBridgeConfig => ({ ...DEFAULT_CONFIG, permissions: { claude, codex, opencode: 'bypass' } });
 
 /** The value the fake Claude CLI echoes for `--permission-mode` (debug_permission_mode). */
 async function claudeReceivedMode(dir: string, nnn: string): Promise<string | null> {
@@ -74,7 +74,7 @@ async function claudeReceivedMode(dir: string, nnn: string): Promise<string | nu
 
 test('1. the default policy resolves to bypass — no setting, an empty config.json, a pre-M5.10.1 config.json', () => {
   assert.equal(DEFAULT_PERMISSION_POLICY, 'bypass');
-  assert.deepEqual(DEFAULT_CONFIG.permissions, { claude: 'bypass', codex: 'bypass' });
+  assert.deepEqual(DEFAULT_CONFIG.permissions, { claude: 'bypass', codex: 'bypass', opencode: 'bypass' });
   for (const provider of ['claude', 'codex']) {
     const r = resolvePermissionPolicy({ provider });
     assert.ok(r.ok);
@@ -83,9 +83,9 @@ test('1. the default policy resolves to bypass — no setting, an empty config.j
   // Backward compatibility: a config written before M5.10.1 stays valid and means bypass.
   const old = validateConfig({ maxIterations: 4, stopOnUncommittedChanges: true });
   assert.deepEqual(old.errors, []);
-  assert.deepEqual(old.config.permissions, { claude: 'bypass', codex: 'bypass' });
+  assert.deepEqual(old.config.permissions, { claude: 'bypass', codex: 'bypass', opencode: 'bypass' });
   // A partial permissions object keeps the default for the provider it omits.
-  assert.deepEqual(validateConfig({ permissions: { codex: 'ask' } }).config.permissions, { claude: 'bypass', codex: 'ask' });
+  assert.deepEqual(validateConfig({ permissions: { codex: 'ask' } }).config.permissions, { claude: 'bypass', codex: 'ask', opencode: 'bypass' });
 });
 
 test('2./3. an explicit provider setting resolves to exactly that value (ask / bypass)', () => {
@@ -328,15 +328,15 @@ test('getConfig() exposes the per-provider policy and what each installed CLI su
   withProject(async (projectPath) => {
     const engine = new BridgeEngine(projectPath);
     let view = await engine.getConfig();
-    assert.deepEqual(view.config.permissions, { claude: 'bypass', codex: 'bypass' });
-    assert.deepEqual(view.permissionCapabilities.map((c) => c.provider), ['claude', 'codex']);
+    assert.deepEqual(view.config.permissions, { claude: 'bypass', codex: 'bypass', opencode: 'bypass' });
+    assert.deepEqual(view.permissionCapabilities.map((c) => c.provider), ['claude', 'opencode', 'codex']);
     await mkdir(path.join(projectPath, '.ai-bridge'), { recursive: true });
     await writeFile(path.join(projectPath, '.ai-bridge', 'config.json'), JSON.stringify({ permissions: { claude: 'ask' } }), 'utf8');
     view = await engine.getConfig();
     assert.deepEqual(view.errors, []);
-    assert.deepEqual(view.config.permissions, { claude: 'ask', codex: 'bypass' });
+    assert.deepEqual(view.config.permissions, { claude: 'ask', codex: 'bypass', opencode: 'bypass' });
     const saved = await engine.saveConfig({ permissions: { claude: 'bypass', codex: 'ask' } });
     assert.equal(saved.kind, 'SAVED');
-    assert.deepEqual(JSON.parse(await readFile(path.join(projectPath, '.ai-bridge', 'config.json'), 'utf8')).permissions, { claude: 'bypass', codex: 'ask' });
+    assert.deepEqual(JSON.parse(await readFile(path.join(projectPath, '.ai-bridge', 'config.json'), 'utf8')).permissions, { claude: 'bypass', codex: 'ask', opencode: 'bypass' });
     assert.equal((await engine.saveConfig({ permissions: { claude: 'dangerous' } })).kind, 'INVALID');
   }));

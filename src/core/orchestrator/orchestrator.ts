@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { CLAUDE_PERMISSION_CAPABILITY, claudePermissionArgs, findReportedClaudeModel, type ClaudeCodeCliAdapter } from '../../adapters/claude/claude-code-cli-adapter.ts';
+import { EXECUTOR_PROVIDER_INFO, type ExecutorAdapter } from '../executor/executor-adapter.ts';
 import { CODEX_PERMISSION_CAPABILITY, codexPermissionArgs, type CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
 import { resolvePermissionPolicy, type ProviderPermissionCapability, type ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
 import { ReportValidator } from '../../reports/report-validator.ts';
@@ -121,7 +121,9 @@ export interface OrchestratorOptions {
   maxIterations: number;
   claudeTimeoutMs: number;
   codexTimeoutMs: number;
-  claudeAdapter: ClaudeCodeCliAdapter;
+  /** The developer-slot executor (docs/64) — Claude Code by default. The option keeps its
+   * original name: it is the same slot, whichever CLI fills it. */
+  claudeAdapter: ExecutorAdapter;
   codexAdapter: CodexCliAdapter;
   reportValidator?: ReportValidator;
   responseParser?: CodexResponseParser;
@@ -178,7 +180,7 @@ export interface OrchestratorOptions {
   crashInjection?: { at: CrashPoint; onTrigger: () => void };
 }
 
-function defaultPolicy(provider: 'claude' | 'codex'): ResolvedPermissionPolicy {
+function defaultPolicy(provider: 'claude' | 'codex' | 'opencode'): ResolvedPermissionPolicy {
   const r = resolvePermissionPolicy({ provider });
   if (!r.ok) throw new Error(r.reason);
   return r.policy;
@@ -206,8 +208,9 @@ export class Orchestrator {
   constructor(options: OrchestratorOptions) {
     // Fails closed before anything is spawned: a policy the provider's CLI does not declare
     // is a construction error, never silently downgraded or passed through.
-    this.permissions = options.permissionPolicies ?? { claude: defaultPolicy('claude'), codex: defaultPolicy('codex') };
-    assertSupportedPolicy(this.permissions.claude, CLAUDE_PERMISSION_CAPABILITY);
+    // The `claude` slot holds the executor's policy, whichever CLI fills the slot.
+    this.permissions = options.permissionPolicies ?? { claude: defaultPolicy(EXECUTOR_PROVIDER_INFO[options.claudeAdapter.provider].configKey), codex: defaultPolicy('codex') };
+    assertSupportedPolicy(this.permissions.claude, options.claudeAdapter.permissionCapability);
     assertSupportedPolicy(this.permissions.codex, CODEX_PERMISSION_CAPABILITY);
     this.o = options;
     this.validator = options.reportValidator ?? new ReportValidator();
@@ -350,8 +353,11 @@ export class Orchestrator {
         staleReport = await isolateStaleReport(reportPath, o.reportsDir).catch(() => null);
 
         await push('CLAUDE_EXECUTING', iteration);
+        const executor = o.claudeAdapter;
+        const cli = EXECUTOR_PROVIDER_INFO[executor.provider].cliLabel;
         const isResume = claudeSessionId !== null;
-        const sessionIdForThisRun = claudeSessionId ?? randomUUID();
+        // Claude takes a caller-made id for a new session; OpenCode creates its own (null = "the CLI will tell us").
+        const sessionIdForThisRun = claudeSessionId ?? (executor.sessionIdAssignment === 'caller' ? randomUUID() : null);
         const contract = buildReportContract({ reportPath, sessionId: o.bridgeSessionId, iteration });
 
         // M4.1 execution record: written before spawn, rewritten when the process ends.
@@ -368,12 +374,12 @@ export class Orchestrator {
           inputFile: promptPath,
           inputSha256: promptSha256,
           inputBytes: promptBytes,
-          permission: { ...this.permissions.claude, cliArgs: claudePermissionArgs(this.permissions.claude.resolved) },
+          permission: { ...this.permissions.claude, cliArgs: executor.permissionArgs(this.permissions.claude.resolved) },
         });
-        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: null }, ...(staleReport ? { staleReport } : {}) };
+        claudeExec = { ...claudeExec, provider: executor.provider, model: { requested: o.claudeModel ?? null, reported: null }, ...(staleReport ? { staleReport } : {}) };
         await claudeExecWriter.write(claudeExec);
 
-        const claudeResult = await o.claudeAdapter.run({
+        const claudeResult = await executor.run({
           cwd: o.projectPath,
           prompt,
           sessionId: sessionIdForThisRun,
@@ -390,7 +396,7 @@ export class Orchestrator {
             emitNow(
               'CLAUDE_PROCESS_STARTED',
               iteration,
-              `Claude CLI process started — pid ${pid}, ${isResume ? `resuming Claude session ${sessionIdForThisRun}` : `new Claude session ${sessionIdForThisRun} (requested)`}`,
+              `${cli} CLI process started — pid ${pid}, ${isResume ? `resuming ${cli} session ${sessionIdForThisRun}` : sessionIdForThisRun === null ? `new ${cli} session (the CLI will report its id)` : `new ${cli} session ${sessionIdForThisRun} (requested)`}`,
               { pid, claudeSessionId: sessionIdForThisRun, mode: isResume ? 'RESUME' : 'NEW' },
             );
             maybeCrash('AFTER_CLAUDE_STARTED');
@@ -398,7 +404,7 @@ export class Orchestrator {
           onInputFlushed: (bytes) => {
             claudeExec = { ...claudeExec, input: { ...claudeExec.input, delivery: 'STDIN_FLUSHED_AND_CLOSED', deliveredAt: new Date().toISOString() } };
             void claudeExecWriter.write(claudeExec).catch(() => {});
-            emitNow('PROMPT_SENT', iteration, `Prompt written to Claude CLI stdin and stdin closed — ${bytes} bytes, sha256 ${short(promptSha256)}`, {
+            emitNow('PROMPT_SENT', iteration, `Prompt written to ${cli} CLI stdin and stdin closed — ${bytes} bytes, sha256 ${short(promptSha256)}`, {
               promptBytes: bytes,
               promptSha256,
               claudeSessionId: sessionIdForThisRun,
@@ -432,7 +438,7 @@ export class Orchestrator {
           },
           { stdoutFile: claudeStdoutPath, stderrFile: claudeStderrPath },
         );
-        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: findReportedClaudeModel(claudeResult.stdout) } };
+        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: executor.findReportedModel(claudeResult.stdout) } };
         await claudeExecWriter.write(claudeExec);
         claudeDiagnostics = buildDiagnostics(claudeExec, { stdout: claudeResult.stdout, stderr: claudeResult.stderr, finalMessage: claudeResult.finalMessage }, claudeExecPath);
         if (isResume) {
@@ -443,7 +449,7 @@ export class Orchestrator {
               : c.verdict === 'MISMATCH'
                 ? `continuity MISMATCH (the CLI reported ${c.reported})`
                 : 'continuity UNKNOWN (the CLI reported no session id)';
-          await emit('CLAUDE_SESSION_RESUMED', iteration, `Claude CLI session ${sessionIdForThisRun} resumed — ${verdictText}`, {
+          await emit('CLAUDE_SESSION_RESUMED', iteration, `${cli} CLI session ${sessionIdForThisRun} resumed — ${verdictText}`, {
             claudeSessionId: sessionIdForThisRun,
             reportedSessionId: c.reported,
             continuity: c.verdict,
@@ -452,7 +458,7 @@ export class Orchestrator {
         await o.onLog?.({
           iteration,
           adapter: 'claude',
-          command: `claude -p --output-format stream-json ${isResume ? '--resume' : '--session-id'} ${sessionIdForThisRun}`,
+          command: executor.commandLabel(sessionIdForThisRun, isResume),
           exitCode: claudeResult.exitCode,
           durationMs: claudeResult.durationMs,
           reportPath,
@@ -463,14 +469,14 @@ export class Orchestrator {
           await emit(
             'CLAUDE_FAILED',
             iteration,
-            `Claude CLI failed — ${claudeResult.errorCode}, exit code ${claudeResult.exitCode ?? 'none'}, after ${claudeResult.durationMs}ms`,
+            `${cli} CLI failed — ${claudeResult.errorCode}, exit code ${claudeResult.exitCode ?? 'none'}, after ${claudeResult.durationMs}ms`,
             { errorCode: claudeResult.errorCode, exitCode: claudeResult.exitCode, durationMs: claudeResult.durationMs, pid: claudeResult.pid },
           );
           await push('ERROR', iteration);
           return finish(
             'ERROR',
             `CLAUDE_RUN_FAILED:${claudeResult.errorCode}`,
-            claudeResult.stderr ? redactSecrets(tail(claudeResult.stderr)) : null,
+            claudeResult.stderr ? redactSecrets(tail(claudeResult.stderr)) : claudeResult.errorCode === 'CLI_REPORTED_ERROR' && claudeResult.finalMessage ? redactSecrets(tail(claudeResult.finalMessage)) : null,
             claudeSessionId,
             codexThreadId,
             claudeDiagnostics,

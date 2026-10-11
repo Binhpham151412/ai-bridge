@@ -13,11 +13,12 @@ import { FakeMain, click, makeSnapshot, q, render } from './harness.tsx';
 
 // M5.10.1 — Settings → "AI Execution Permissions" and the per-execution audit row.
 
-function settings(permissions: { claude: 'ask' | 'bypass'; codex: 'ask' | 'bypass' }): SettingsView {
+function settings(base: { claude: 'ask' | 'bypass'; codex: 'ask' | 'bypass' }): SettingsView {
+  const permissions = { ...base, opencode: 'bypass' as const };
   return {
     app: { defaultProjectPath: null },
     project: {
-      config: { maxIterations: 10, claudeTimeoutMs: 1_800_000, codexTimeoutMs: 600_000, reportMaxBytes: 1_048_576, stopOnUncommittedChanges: false, requireGitRepository: false, permissions, models: { claude: null } },
+      config: { maxIterations: 10, claudeTimeoutMs: 1_800_000, codexTimeoutMs: 600_000, reportMaxBytes: 1_048_576, stopOnUncommittedChanges: false, requireGitRepository: false, permissions, models: { claude: null, opencode: null }, executor: { provider: 'claude-code' } },
       errors: [],
       path: 'D:\\work\\demo\\.ai-bridge\\config.json',
       exists: false,
@@ -69,7 +70,7 @@ test('changing a provider to ask and saving sends the permissions through the va
     const call = main.invoked.find((c) => c.channel === 'bridge:saveProjectConfig');
     assert.ok(call);
     const sent = (call.args[0] as { config: Record<string, unknown> }).config;
-    assert.deepEqual(sent.permissions, { claude: 'ask', codex: 'bypass' });
+    assert.deepEqual(sent.permissions, { claude: 'ask', codex: 'bypass', opencode: 'bypass' });
     assert.equal(sent.maxIterations, 10, 'scalar fields are still sent as numbers, untouched');
   } finally {
     await unmount();
@@ -146,7 +147,7 @@ test('Settings → Claude model: default is the CLI setting; picking Opus 5.5 an
     await act(async () => setSelect(select, 'claude-opus-5-5'));
     await click([...container.querySelectorAll('button[type="submit"]')].find((b) => b.textContent === 'Lưu cấu hình'));
     const sent = (main.invoked.find((c) => c.channel === 'bridge:saveProjectConfig')!.args[0] as { config: Record<string, unknown> }).config;
-    assert.deepEqual(sent.models, { claude: 'claude-opus-5-5' });
+    assert.deepEqual(sent.models, { claude: 'claude-opus-5-5', opencode: null });
   } finally {
     await unmount();
   }
@@ -154,7 +155,7 @@ test('Settings → Claude model: default is the CLI setting; picking Opus 5.5 an
 
 test('Settings → Claude model: "Khác…" reveals a free-text field; a saved custom model is shown in it', async () => {
   const view = settings({ claude: 'bypass', codex: 'bypass' });
-  view.project!.config.models = { claude: 'opus[1m]' };
+  view.project!.config.models = { claude: 'opus[1m]', opencode: null };
   const { container, unmount } = await openSettings(view);
   try {
     assert.equal((q(container, 'model-claude-select') as HTMLSelectElement).value, '__custom__');

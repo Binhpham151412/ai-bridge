@@ -83,6 +83,8 @@ export interface AiBridgeApi {
   setProjectPinned(request: ProjectSetPinnedRequest): Promise<ResponseOf<'project:setPinned'>>;
   removeRecentProject(request: ProjectHistoryIdRequest): Promise<ResponseOf<'project:removeRecent'>>;
   locateProject(request: ProjectHistoryIdRequest): Promise<ResponseOf<'project:locate'>>;
+  /** docs/64: executor CLIs detected on this machine (a fresh check each call). */
+  listExecutorProviders(): Promise<ResponseOf<'providers:list'>>;
   onWorkflowEvent(listener: (event: WorkflowEvent) => void): () => void;
   onWorkflowSnapshot(listener: (snapshot: WorkflowPanelSnapshot) => void): () => void;
 }
@@ -142,6 +144,7 @@ export function createBridgeApi(ipc: IpcRendererLike): AiBridgeApi {
     setProjectPinned: (request: ProjectSetPinnedRequest) => call('project:setPinned', request),
     removeRecentProject: (request: ProjectHistoryIdRequest) => call('project:removeRecent', request),
     locateProject: (request: ProjectHistoryIdRequest) => call('project:locate', request),
+    listExecutorProviders: () => call('providers:list'),
     onWorkflowEvent: (listener: (event: WorkflowEvent) => void) => subscribe('workflow:event', listener),
     onWorkflowSnapshot: (listener: (snapshot: WorkflowPanelSnapshot) => void) => subscribe('workflow:snapshot', listener),
   });

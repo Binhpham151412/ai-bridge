@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os';
 import { runProcess } from '../../automation/process-runner.ts';
 import { createClaudeCodeProvider } from './claude-code-provider.ts';
 import { createCodexProvider } from './codex-provider.ts';
+import { createOpenCodeProvider } from './opencode-provider.ts';
 import { createRealExecutableLocator } from './executable-discovery.ts';
 import type { DiagnosticDepth, ProviderAdapter, ProviderDescriptor, ProviderDiagnosticContext, ProviderErrorCode, ProviderId, ProviderLoginCommand, ProviderStatus } from './provider-types.ts';
 import { safeExcerpt } from './cli-provider.ts';
@@ -165,7 +166,7 @@ export function createRealProviderContext(overrides: Partial<ProviderDiagnosticC
   };
 }
 
-/** Claude Code + Codex, wired to the real PATH and process runner. */
+/** Claude Code + OpenCode (executors) + Codex (reviewer), wired to the real PATH and process runner. */
 export function createDefaultProviderRegistry(ctx: ProviderDiagnosticContext = createRealProviderContext(), options: ProviderRegistryOptions = {}): ProviderRegistry {
-  return new ProviderRegistry(ctx, [createClaudeCodeProvider(), createCodexProvider()], options);
+  return new ProviderRegistry(ctx, [createClaudeCodeProvider(), createOpenCodeProvider(), createCodexProvider()], options);
 }

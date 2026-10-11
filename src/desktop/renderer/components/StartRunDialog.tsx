@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { AiBridgeConfig } from '../../../core/config/config.ts';
+import { DEFAULT_EXECUTOR_PROVIDER, EXECUTOR_PROVIDER_INFO } from '../../shared/executor-providers.ts';
 import { MAX_ITERATIONS_LIMIT, MAX_TASK_LENGTH } from '../../shared/ipc-contract.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
 import { BYPASS_WARNING } from './Settings.tsx';
@@ -41,6 +42,8 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
     };
   }, [api]);
 
+  // The project's setting (older mocks/configs without it → Claude Code, the long-standing default).
+  const executor = EXECUTOR_PROVIDER_INFO[config?.executor?.provider ?? DEFAULT_EXECUTOR_PROVIDER];
   const parsedMax = Number(maxIterations);
   const maxValid = maxIterations === '' || (Number.isInteger(parsedMax) && parsedMax >= 1 && parsedMax <= MAX_ITERATIONS_LIMIT);
   const canSubmit = task.trim() !== '' && maxValid && !submitting && snapshot?.controls.canStart === true;
@@ -63,13 +66,13 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
           <input type="text" value={snapshot?.project?.path ?? ''} readOnly />
         </label>
         <label className="field">
-          <span>Task cho Claude (iteration 1)</span>
-          <textarea value={task} onChange={(e) => setTask(e.target.value)} rows={7} maxLength={MAX_TASK_LENGTH} placeholder="Mô tả việc Claude cần làm…" autoFocus data-testid="start-task" />
+          <span>Task cho {executor.cliLabel} (iteration 1)</span>
+          <textarea value={task} onChange={(e) => setTask(e.target.value)} rows={7} maxLength={MAX_TASK_LENGTH} placeholder={`Mô tả việc ${executor.cliLabel} cần làm…`} autoFocus data-testid="start-task" />
         </label>
         <div className="field-row">
           <label className="field">
             <span>Developer</span>
-            <input type="text" value="Claude Code CLI (executor)" readOnly data-testid="start-developer" />
+            <input type="text" value={`${executor.displayName} CLI (executor)`} readOnly data-testid="start-developer" />
           </label>
           <label className="field">
             <span>Reviewer</span>
@@ -112,7 +115,7 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
             <small className="hint">Maximum rounds — run stops earlier if reviewer returns DONE.</small>
           </label>
           <label className="field">
-            <span>Claude timeout</span>
+            <span>{executor.cliLabel} timeout</span>
             <input type="text" value={config ? `${Math.round(config.claudeTimeoutMs / 60000)} phút` : '—'} readOnly />
           </label>
           <label className="field">
@@ -123,7 +126,7 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
         <p className="hint">Timeout là cấu hình Core của project (Settings). Core chạy System Check trước khi bắt đầu và từ chối nếu chưa PASS.</p>
         {config && (
           <p className={Object.values(config.permissions).includes('bypass') ? 'warn' : 'hint'} role="note" data-testid="start-permissions">
-            Claude model: {config.models?.claude ?? 'theo cấu hình Claude CLI'} · Permissions — Claude: {config.permissions.claude}, Codex: {config.permissions.codex} (Settings).
+            {executor.cliLabel} model: {config.models?.[executor.configKey as 'claude' | 'opencode'] ?? `theo cấu hình ${executor.cliLabel} CLI`} · Permissions — {executor.cliLabel}: {config.permissions[executor.configKey]}, Codex: {config.permissions.codex} (Settings).
             {Object.values(config.permissions).includes('bypass') ? ` ${BYPASS_WARNING}` : ''}
           </p>
         )}

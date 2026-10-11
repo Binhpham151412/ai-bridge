@@ -1,3 +1,4 @@
+import { DEFAULT_EXECUTOR_PROVIDER, EXECUTOR_PROVIDERS, isExecutorProviderId, type ExecutorProviderId } from '../executor/executor-adapter.ts';
 import { PERMISSION_POLICIES, defaultProviderPermissions, isPermissionPolicy, isPermissionProvider, type ProviderPermissionSettings } from '../permissions/permission-policy.ts';
 
 export interface AiBridgeConfig {
@@ -10,7 +11,9 @@ export interface AiBridgeConfig {
   /** M5.10.1: per-provider permission policy (docs/61). Absent in a file → `bypass`. */
   permissions: ProviderPermissionSettings;
   /** Model per provider (docs/62). `null` = no `--model` flag: the CLI's own setting decides. */
-  models: { claude: string | null };
+  models: { claude: string | null; opencode: string | null };
+  /** docs/64: which AI CLI fills the developer slot. Absent in a file → Claude Code. */
+  executor: { provider: ExecutorProviderId };
 }
 
 /** A model alias or full id as the CLI accepts it (`opus`, `claude-opus-5-5`, `opus[1m]`):
@@ -21,6 +24,14 @@ export function isValidModelName(value: unknown): value is string {
   return typeof value === 'string' && MODEL_NAME_PATTERN.test(value);
 }
 
+/** OpenCode writes a model as `provider/model` (`anthropic/claude-opus-5-5`, and ids may contain
+ * further slashes): same rules as MODEL_NAME_PATTERN plus `/`. */
+export const OPENCODE_MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:\[\]\/-]{0,199}$/;
+
+export function isValidOpenCodeModelName(value: unknown): value is string {
+  return typeof value === 'string' && OPENCODE_MODEL_NAME_PATTERN.test(value);
+}
+
 export const DEFAULT_CONFIG: AiBridgeConfig = {
   maxIterations: 10,
   claudeTimeoutMs: 1_800_000,
@@ -29,7 +40,8 @@ export const DEFAULT_CONFIG: AiBridgeConfig = {
   stopOnUncommittedChanges: false,
   requireGitRepository: false,
   permissions: defaultProviderPermissions(),
-  models: { claude: null },
+  models: { claude: null, opencode: null },
+  executor: { provider: DEFAULT_EXECUTOR_PROVIDER },
 };
 
 export interface ValidateConfigResult {
@@ -47,8 +59,8 @@ export const MAX_RUN_ITERATIONS = 100;
 const MAX_ITERATIONS_CAP = MAX_RUN_ITERATIONS;
 const NUMBER_FIELDS = ['maxIterations', 'claudeTimeoutMs', 'codexTimeoutMs', 'reportMaxBytes'] as const;
 const BOOLEAN_FIELDS = ['stopOnUncommittedChanges', 'requireGitRepository'] as const;
-const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS, 'permissions', 'models'];
-const MODEL_PROVIDERS = ['claude'] as const;
+const KNOWN_FIELDS: readonly string[] = [...NUMBER_FIELDS, ...BOOLEAN_FIELDS, 'permissions', 'models', 'executor'];
+const MODEL_PROVIDERS = ['claude', 'opencode'] as const;
 
 function isPositiveInteger(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
@@ -67,7 +79,7 @@ export function validateConfig(raw: unknown): ValidateConfigResult {
     if (!KNOWN_FIELDS.includes(key)) errors.push(`Unknown config field: "${key}"`);
   }
 
-  const config: AiBridgeConfig = { ...DEFAULT_CONFIG, permissions: defaultProviderPermissions(), models: { claude: null } };
+  const config: AiBridgeConfig = { ...DEFAULT_CONFIG, permissions: defaultProviderPermissions(), models: { claude: null, opencode: null }, executor: { provider: DEFAULT_EXECUTOR_PROVIDER } };
 
   for (const field of NUMBER_FIELDS) {
     if (!(field in obj)) continue;
@@ -112,9 +124,28 @@ export function validateConfig(raw: unknown): ValidateConfigResult {
       errors.push(`models must be an object like {"claude": "claude-opus-5-5"}, got ${JSON.stringify(v)}`);
     } else {
       for (const [provider, model] of Object.entries(v as Record<string, unknown>)) {
-        if (!(MODEL_PROVIDERS as readonly string[]).includes(provider)) errors.push(`Unknown models provider: "${provider}" (only claude is configurable)`);
-        else if (model !== null && !isValidModelName(model)) errors.push(`models.${provider} must be null (use the CLI's setting) or a model name like "opus" or "claude-opus-5-5", got ${JSON.stringify(model)}`);
+        if (!(MODEL_PROVIDERS as readonly string[]).includes(provider)) errors.push(`Unknown models provider: "${provider}" (configurable: ${MODEL_PROVIDERS.join(', ')})`);
+        else if (provider === 'opencode') {
+          if (model !== null && !isValidOpenCodeModelName(model)) errors.push(`models.opencode must be null (use OpenCode's setting) or a model like "anthropic/claude-opus-5-5", got ${JSON.stringify(model)}`);
+          else config.models.opencode = model as string | null;
+        } else if (model !== null && !isValidModelName(model)) errors.push(`models.${provider} must be null (use the CLI's setting) or a model name like "opus" or "claude-opus-5-5", got ${JSON.stringify(model)}`);
         else config.models.claude = model as string | null;
+      }
+    }
+  }
+
+  if ('executor' in obj) {
+    const v = obj.executor;
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+      errors.push(`executor must be an object like {"provider": "opencode"}, got ${JSON.stringify(v)}`);
+    } else {
+      for (const key of Object.keys(v)) {
+        if (key !== 'provider') errors.push(`Unknown executor field: "${key}"`);
+      }
+      const provider = (v as Record<string, unknown>).provider;
+      if ('provider' in v) {
+        if (!isExecutorProviderId(provider)) errors.push(`executor.provider must be one of ${EXECUTOR_PROVIDERS.join(', ')}, got ${JSON.stringify(provider)}`);
+        else config.executor = { provider };
       }
     }
   }

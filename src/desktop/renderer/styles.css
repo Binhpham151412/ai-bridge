@@ -1397,6 +1397,33 @@ tr:focus-visible {
   margin: 6px 0;
 }
 
+/* docs/64: developer AI (executor) picker */
+.executor-list {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+.executor-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #d9dee7);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  cursor: pointer;
+}
+.executor-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.executor-card input[type='radio'] {
+  margin-top: 4px;
+}
+.executor-card .pill {
+  margin-left: 6px;
+}
+
 /* ---------- modal ---------- */
 .modal-backdrop {
   position: fixed;

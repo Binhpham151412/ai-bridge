@@ -10,6 +10,8 @@ const LABELS: Record<string, string> = {
   'api-key-env': 'Cost guard (không API key)',
   'claude-cli': 'Claude CLI',
   'claude-auth': 'Authentication — Claude',
+  'opencode-cli': 'OpenCode CLI',
+  'opencode-auth': 'Credentials — OpenCode',
   'codex-cli': 'Codex CLI',
   'codex-auth': 'Authentication — ChatGPT/Codex',
   git: 'Git',
@@ -22,6 +24,7 @@ const LABELS: Record<string, string> = {
  * listed here still shows, under "Other". */
 const GROUPS: { title: string; names: string[] }[] = [
   { title: 'Claude Code', names: ['claude-cli', 'claude-auth'] },
+  { title: 'OpenCode', names: ['opencode-cli', 'opencode-auth'] },
   { title: 'ChatGPT / Codex', names: ['codex-cli', 'codex-auth'] },
   { title: 'Project', names: ['project-directory', 'config', 'git-repository'] },
   { title: 'Environment', names: ['node', 'git', 'api-key-env'] },

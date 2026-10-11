@@ -8,6 +8,7 @@ import type { ProviderDiagnosticContext } from '../../src/core/providers/provide
 const FIXTURES = fileURLToPath(new URL('../fixtures/fake-provider/', import.meta.url));
 export const FAKE_CLAUDE_DIAG = path.join(FIXTURES, 'fake-claude-diag.mjs');
 export const FAKE_CODEX_DIAG = path.join(FIXTURES, 'fake-codex-diag.mjs');
+export const FAKE_OPENCODE_DIAG = path.join(FIXTURES, 'fake-opencode-diag.mjs');
 
 const SCRUBBED_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'FAKE_DIAG_VERSION', 'FAKE_DIAG_AUTH', 'FAKE_DIAG_PROBE', 'FAKE_DIAG_LOG'];
 
@@ -50,6 +51,6 @@ export function fakeContext(opts: FakeContextOptions = {}): ProviderDiagnosticCo
     probeTimeoutMs: opts.probeTimeoutMs ?? 10000,
     probeCwd: tmpdir(),
     now: () => new Date('2026-09-27T12:00:00.000Z'),
-    commandArgsPrefix: { 'claude-code': [FAKE_CLAUDE_DIAG], codex: [FAKE_CODEX_DIAG] },
+    commandArgsPrefix: { 'claude-code': [FAKE_CLAUDE_DIAG], opencode: [FAKE_OPENCODE_DIAG], codex: [FAKE_CODEX_DIAG] },
   };
 }

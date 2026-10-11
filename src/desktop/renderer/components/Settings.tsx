@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { DEFAULT_EXECUTOR_PROVIDER, EXECUTOR_PROVIDERS, EXECUTOR_PROVIDER_INFO, isExecutorProviderId, type ExecutorProviderId } from '../../shared/executor-providers.ts';
 import type { PermissionPolicy, ProviderPermissionSettings } from '../../../core/permissions/permission-policy.ts';
-import type { SettingsView } from '../../shared/ipc-contract.ts';
+import type { ExecutorProviderView, SettingsView } from '../../shared/ipc-contract.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
+import { notifyProjectConfigSaved } from '../state/useExecutorProvider.ts';
 import { Card, EmptyState } from './common.tsx';
 import { RecentProjects } from './RecentProjects.tsx';
 
@@ -36,6 +38,13 @@ const CLAUDE_MODEL_PRESETS: { value: string; label: string }[] = [
 ];
 const CUSTOM_MODEL = '__custom__';
 
+/** docs/64 — what the executor picker says about one detected CLI (the detail sentence comes from Main). */
+function executorBadge(view: ExecutorProviderView | undefined, detecting: boolean): { label: string; tone: 'success' | 'warning' | 'muted' } {
+  if (!view) return detecting ? { label: 'Đang dò…', tone: 'muted' } : { label: 'Chưa dò được', tone: 'muted' };
+  if (!view.installed) return { label: 'Chưa cài', tone: 'warning' };
+  return view.ready ? { label: 'Sẵn sàng', tone: 'success' } : { label: 'Đã cài, chưa đăng nhập', tone: 'warning' };
+}
+
 /** "= 30 phút" next to a millisecond field, computed from what is typed (display only). */
 function minutesOf(value: string | boolean | undefined): string | null {
   if (typeof value !== 'string' || value.trim() === '') return null;
@@ -57,6 +66,12 @@ export function Settings() {
   /** '' = no --model (CLI's own setting); null until the config is loaded. */
   const [claudeModel, setClaudeModel] = useState<string | null>(null);
   const [customModel, setCustomModel] = useState(false);
+  /** docs/64: the AI CLI that writes the code; null until the config is loaded. */
+  const [executor, setExecutor] = useState<ExecutorProviderId | null>(null);
+  const [opencodeModel, setOpencodeModel] = useState('');
+  /** What Main detected on this machine; null while the (re)check runs. */
+  const [providers, setProviders] = useState<ExecutorProviderView[] | null>(null);
+  const [detectSeq, setDetectSeq] = useState(0);
   const [reload, setReload] = useState(0);
   const projectPath = snapshot?.project?.path ?? null;
 
@@ -75,6 +90,8 @@ export function Settings() {
         }
         setDraft(Object.fromEntries(scalars));
         setPermissions({ ...cfg.permissions });
+        setExecutor(isExecutorProviderId(cfg.executor?.provider) ? cfg.executor.provider : DEFAULT_EXECUTOR_PROVIDER);
+        setOpencodeModel(cfg.models?.opencode ?? '');
         const model = cfg.models?.claude ?? '';
         setClaudeModel(model);
         setCustomModel(!CLAUDE_MODEL_PRESETS.some((p) => p.value === model));
@@ -85,6 +102,18 @@ export function Settings() {
     };
   }, [api, projectPath, reload]);
 
+  // docs/64: detect the installed AI CLIs (a status check only — never a model call). Re-run by "Dò lại".
+  useEffect(() => {
+    let active = true;
+    setProviders(null);
+    void api.listExecutorProviders().then((res) => {
+      if (active) setProviders(res.ok && Array.isArray(res.data) ? res.data : []);
+    });
+    return () => {
+      active = false;
+    };
+  }, [api, detectSeq]);
+
   const save = async (e: FormEvent) => {
     e.preventDefault();
     // Numbers are sent as typed; Core's validateConfig decides what is valid.
@@ -92,9 +121,15 @@ export function Settings() {
     for (const [k, v] of Object.entries(draft)) config[k] = typeof v === 'boolean' ? v : v.trim() === '' ? v : Number(v);
     if (permissions) config.permissions = permissions;
     // Core validates the name; an empty field means "no --model".
-    if (claudeModel !== null) config.models = { claude: claudeModel.trim() === '' ? null : claudeModel.trim() };
+    if (claudeModel !== null) {
+      config.models = { claude: claudeModel.trim() === '' ? null : claudeModel.trim(), opencode: opencodeModel.trim() === '' ? null : opencodeModel.trim() };
+    }
+    if (executor !== null) config.executor = { provider: executor };
     const res = await runAction(() => api.saveProjectConfig({ config }));
-    if (res.ok) setReload((n) => n + 1);
+    if (res.ok) {
+      setReload((n) => n + 1);
+      notifyProjectConfigSaved();
+    }
   };
 
   const setDefault = (clear: boolean) => {
@@ -103,7 +138,9 @@ export function Settings() {
 
   const project = view?.project ?? null;
   const running = snapshot?.status?.status === 'RUNNING';
-  const anyBypass = permissions !== null && Object.values(permissions).includes('bypass');
+  const executorInfo = EXECUTOR_PROVIDER_INFO[executor ?? DEFAULT_EXECUTOR_PROVIDER];
+  // Only the providers this project would actually run (the selected executor + the reviewer) count.
+  const anyBypass = permissions !== null && [permissions[executorInfo.configKey], permissions.codex].includes('bypass');
   const setPolicy = (provider: keyof ProviderPermissionSettings, policy: PermissionPolicy) => setPermissions((p) => (p ? { ...p, [provider]: policy } : p));
 
   return (
@@ -166,7 +203,58 @@ export function Settings() {
                 {f.label}
               </label>
             ))}
-            {claudeModel !== null && (
+            {executor !== null && (
+              <section className="executors" data-testid="executor-section" aria-labelledby="executors-title">
+                <h3 className="form-section" id="executors-title">
+                  Developer AI (executor)
+                </h3>
+                <p className="hint">
+                  AI Bridge tự dò các AI CLI đã cài trên máy (chỉ chạy lệnh kiểm tra phiên bản và đăng nhập — không gọi model, không tốn quota). Chọn AI viết code cho project này; reviewer luôn là ChatGPT / Codex.
+                </p>
+                <div className="executor-list" role="radiogroup" aria-labelledby="executors-title">
+                  {EXECUTOR_PROVIDERS.map((id) => {
+                    const info = EXECUTOR_PROVIDER_INFO[id];
+                    const view = providers?.find((p) => p.id === id);
+                    const badge = executorBadge(view, providers === null);
+                    return (
+                      <label key={id} className={`executor-card ${executor === id ? 'selected' : ''}`} data-testid={`executor-${id}`}>
+                        <input type="radio" name="executor" value={id} checked={executor === id} onChange={() => setExecutor(id)} data-testid={`executor-${id}-radio`} />
+                        <span>
+                          <strong>{info.displayName}</strong> <span className={`pill tone-${badge.tone}`} data-testid={`executor-${id}-badge`}>{badge.label}</span>
+                          <br />
+                          <small className="hint" data-testid={`executor-${id}-message`}>
+                            {view ? view.message : providers === null ? 'Đang kiểm tra…' : 'Không kiểm tra được AI này — bấm "Dò lại". Bạn vẫn có thể chọn; System Check sẽ báo lại trước khi chạy.'}
+                            {view && !view.ready ? ` Đăng nhập: ${info.loginHint}` : ''}
+                            {view?.version ? ` · phiên bản ${view.version}` : ''}
+                          </small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="row-actions">
+                  <button type="button" className="btn btn-small" onClick={() => setDetectSeq((n) => n + 1)} disabled={providers === null} data-testid="executor-refresh">
+                    Dò lại
+                  </button>
+                </div>
+                <p className="hint">Cấu hình chỉ có hiệu lực cho run mới. Run đang dở luôn được resume bằng đúng AI nó đã bắt đầu.</p>
+              </section>
+            )}
+            {executor === 'opencode' && (
+              <section className="models" data-testid="models-opencode-section" aria-labelledby="models-opencode-title">
+                <h3 className="form-section" id="models-opencode-title">
+                  OpenCode model
+                </h3>
+                <label className="field">
+                  <span>Model cho OpenCode (executor)</span>
+                  <input type="text" value={opencodeModel} onChange={(e) => setOpencodeModel(e.target.value)} placeholder="vd. anthropic/claude-opus-5-5 — để trống = theo cấu hình OpenCode" data-testid="model-opencode" />
+                  <small className="hint">
+                    Viết theo dạng <code>provider/model</code>; chạy <code>opencode models</code> để xem danh sách. Để trống thì AI Bridge không truyền <code>--model</code> và OpenCode tự chọn. OpenCode không báo model nó đã dùng nên execution chỉ ghi model đã yêu cầu.
+                  </small>
+                </label>
+              </section>
+            )}
+            {executor === 'claude-code' && claudeModel !== null && (
               <section className="models" data-testid="models-section" aria-labelledby="models-title">
                 <h3 className="form-section" id="models-title">
                   Claude model
@@ -211,7 +299,9 @@ export function Settings() {
                     {BYPASS_WARNING}
                   </p>
                 )}
-                {project.permissionCapabilities.map((cap) => (
+                {project.permissionCapabilities
+                  .filter((cap) => cap.provider === 'codex' || cap.provider === executorInfo.configKey)
+                  .map((cap) => (
                   <fieldset key={cap.provider} className="permission-provider" data-testid={`permission-${cap.provider}`}>
                     <legend>{cap.displayName}</legend>
                     {cap.modes.map((mode) => (
