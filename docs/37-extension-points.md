@@ -18,7 +18,7 @@ definitions. Everything else below is PROPOSED or FUTURE.
 
 | # | Extension | Owner | Contract | Current status | Phase | Risk |
 |---|---|---|---|---|---|---|
-| E1 | Provider diagnostics adapter | core/providers | `ProviderAdapter {descriptor, diagnose, loginCommand}` + `ProviderRegistry.register` | **EXISTING** (Claude Code, Codex) | M4.3 P2 (IPC/UI) | Low: diagnostics only |
+| E1 | Provider diagnostics adapter | core/providers | `ProviderAdapter {descriptor, diagnose, loginCommand}` + `ProviderRegistry.register` | **EXISTING** (Claude Code, OpenCode, Codex) — IPC/UI for the executors landed with docs/64 | docs/64 | Low: diagnostics only |
 | E2 | Run event subscription | BridgeEngine | `subscribe(listener) → unsubscribe`; listener errors swallowed | **EXISTING** | used by M5 | Low |
 | E3 | Doctor checks | preflight/doctor | `DoctorCheckDefinition {name, run}` | **EXISTING** (internal list) | unchanged | Medium if checks become user-defined (they won't) |
 | E4 | Orchestrator lifecycle callbacks | Orchestrator | `OrchestratorOptions.on*` / `should*` | **EXISTING**, wired only by BridgeEngine | **not** an M5 extension point: the workflow uses BridgeEngine's API, not these | High if misused (bypasses BridgeEngine) |
@@ -44,7 +44,7 @@ definitions. Everything else below is PROPOSED or FUTURE.
 | E24 | User command hooks | security | only under trust tiers, fail-closed | FUTURE | ≥ M7 | High |
 | E25 | MemoryPort | memory | docs/31 §3.3; a Null default | FUTURE | M8 | Medium (poisoning) |
 | E26 | Graph index adapter (Graphify) | memory | `query()` over a derived, hash-pinned index | FUTURE | M8 | Medium (staleness) |
-| E27 | Execution adapter interfaces | execution | `ExecutorAdapter` / `ReviewerAdapter` (docs/30 §4.3) | FUTURE | M9 | **High** (touches the M4 core) |
+| E27 | Execution adapter interfaces | execution | `ExecutorAdapter` / `ReviewerAdapter` (docs/30 §4.3) | **PARTLY EXISTING**: `ExecutorAdapter` (`src/core/executor/executor-adapter.ts`, Claude Code + OpenCode, docs/64); `ReviewerAdapter` still FUTURE (Codex stays the only reviewer) | docs/64 / M9 | **High** (touches the M4 core) |
 | E28 | Parallel branches / worktrees | workflow host | fan-out/join steps, per-branch project path | FUTURE | M9 | High |
 | E29 | Telemetry exporter | observability | an OTel mapping over files | FUTURE | optional | Low |
 | E30 | Definition import formats | workflow | YAML → canonical JSON | FUTURE | optional | Low |

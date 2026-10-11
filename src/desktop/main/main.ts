@@ -8,6 +8,7 @@ import type { WorkflowHostCommand, WorkflowHostControl } from '../../hosts/workf
 import type { BridgeEvent } from '../../core/observability/events.ts';
 import { forkChildHost, forkRunHost } from './fork-run-host.ts';
 import { createIpcRouter, createTrustedSenderCheck, type ChannelHandlers } from './ipc-router.ts';
+import { ExecutorProviderService } from './executor-providers.ts';
 import { ProjectHistoryService } from './project-history-service.ts';
 import type { ProjectInfo } from '../shared/ipc-contract.ts';
 import { RunController } from './run-controller.ts';
@@ -32,6 +33,8 @@ if (!app.requestSingleInstanceLock()) app.quit();
 let mainWindow: BrowserWindow | null = null;
 /** docs/63: recent projects + last-project restore; the single writer of userData/settings.json. */
 let history: ProjectHistoryService | null = null;
+/** docs/64: detects which executor CLIs are installed/signed in (a check spawns only --version and a login-status command). */
+const executorProviders = new ExecutorProviderService();
 
 const controller = new RunController({
   createEngine: (projectPath) => new BridgeEngine(projectPath),
@@ -141,6 +144,7 @@ const handlers: ChannelHandlers = {
   'project:setPinned': (request) => (history ? history.setPinned(request.id, request.pinned) : Promise.resolve(NOT_READY)),
   'project:removeRecent': (request) => (history ? history.remove(request.id) : Promise.resolve(NOT_READY)),
   'project:locate': (request) => (history ? history.locate(request.id, (hint) => pickFolder('Tìm lại thư mục project', hint)) : Promise.resolve(NOT_READY)),
+  'providers:list': () => executorProviders.list(),
 };
 
 function registerIpc(): void {

@@ -29,6 +29,7 @@ test('the exposed API is a frozen object of fixed functions — no generic invok
     'getSessionArtifacts',
     'getSettings',
     'getSnapshot',
+    'listExecutorProviders',
     'listSessions',
     'locateProject',
     'onEvent',
