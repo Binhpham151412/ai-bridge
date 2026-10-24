@@ -16,6 +16,7 @@ import type { ExecutionRecord } from '../src/core/execution/execution-record.ts'
 
 const FAKE_CLAUDE = fileURLToPath(new URL('./fixtures/fake-claude/fake-claude.mjs', import.meta.url));
 const FAKE_OPENCODE = fileURLToPath(new URL('./fixtures/fake-opencode/fake-opencode.mjs', import.meta.url));
+const FAKE_AGY = fileURLToPath(new URL('./fixtures/fake-agy/fake-agy.mjs', import.meta.url));
 const FAKE_CODEX = fileURLToPath(new URL('./fixtures/fake-codex/fake-codex.mjs', import.meta.url));
 
 const withExecutor = (provider: ExecutorProviderId, extra: Partial<AiBridgeConfig> = {}): AiBridgeConfig => ({
@@ -86,9 +87,9 @@ const events = async (projectPath: string): Promise<Array<Record<string, unknown
 // The provider table and the config
 // ---------------------------------------------------------------------------
 
-test('providers: Claude Code is the default and the only caller-assigned CLI; ids are validated', () => {
+test('providers: Claude Code is the default and the only CLI that takes a caller-assigned session id; ids are validated', () => {
   assert.equal(DEFAULT_EXECUTOR_PROVIDER, 'claude-code');
-  assert.deepEqual([...EXECUTOR_PROVIDERS], ['claude-code', 'opencode']);
+  assert.deepEqual([...EXECUTOR_PROVIDERS], ['claude-code', 'opencode', 'antigravity']);
   assert.equal(EXECUTOR_PROVIDER_INFO['claude-code'].sessionIdAssignment, 'caller');
   assert.equal(EXECUTOR_PROVIDER_INFO.opencode.sessionIdAssignment, 'cli');
   assert.equal(isExecutorProviderId('opencode'), true);
@@ -256,3 +257,61 @@ test('a state file written before this feature (no executor field) resumes as Cl
     assert.deepEqual(seen, [undefined, 'claude-code']);
     assert.equal((await record(await sessionDir(projectPath), '002-claude-execution.json')).provider, 'claude-code');
   }));
+
+// ---------------------------------------------------------------------------
+// Antigravity (docs/65)
+// ---------------------------------------------------------------------------
+
+test('config: Antigravity can be selected; it has no model setting and its own permission', () => {
+  const r = validateConfig({ executor: { provider: 'antigravity' }, permissions: { antigravity: 'ask' } });
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.config.executor, { provider: 'antigravity' });
+  assert.equal(r.config.permissions.antigravity, 'ask');
+  assert.match(validateConfig({ models: { antigravity: 'x' } }).errors.join(' '), /Unknown models provider: "antigravity"/);
+  assert.equal(EXECUTOR_PROVIDER_INFO.antigravity.supportsModel, false);
+  assert.equal(EXECUTOR_PROVIDER_INFO.antigravity.promptChannel, 'argv');
+  assert.equal(EXECUTOR_PROVIDER_INFO.antigravity.executableName, 'agy');
+});
+
+test('run with Antigravity: NEW conversation (id from the CLI log), --conversation resume VERIFIED, prompt delivered as an argument', () =>
+  withProject(async (projectPath) => {
+    const config = withExecutor('antigravity', { models: { claude: 'must-be-ignored', opencode: 'also-ignored' } });
+    const outcome = await engine(projectPath, config, { prefix: FAKE_AGY, claudeEnv: { FAKE_AGY_MODE: 'ok' }, codexDoneAt: '2' }).start({ task: 'do it', maxIterations: 3 });
+    assert.equal(outcome.kind === 'COMPLETED' && outcome.finalStatus, 'DONE');
+    assert.equal(outcome.kind === 'COMPLETED' && outcome.claudeSessionId, 'aaaaaaaa-0000-4000-8000-000000000001');
+
+    const dir = await sessionDir(projectPath);
+    const one = await record(dir, '001-claude-execution.json');
+    assert.equal(one.provider, 'antigravity');
+    assert.equal(one.mode, 'NEW');
+    assert.deepEqual(one.cliSessionId, { requested: null, reported: 'aaaaaaaa-0000-4000-8000-000000000001', evidence: 'CONFIRMED_BY_CLI' });
+    assert.equal(one.input.delivery, 'ARGV_AT_SPAWN', 'there is no stdin flush for this CLI; the record says what really happened');
+    assert.deepEqual(one.permission?.cliArgs, ['--dangerously-skip-permissions']);
+    assert.equal(one.permission?.provider, 'antigravity');
+    assert.deepEqual(one.model, { requested: null, reported: 'Fake Model 1 (Thinking)' }, 'no model is requested; the one agy logged is recorded as reported');
+    assert.ok(!one.command.args.includes('--model') && !one.command.args.includes('must-be-ignored'));
+    assert.ok(one.command.args.some((a) => /bytes omitted/.test(a)), 'the long prompt argument is summarised in the record, not stored');
+
+    const two = await record(dir, '002-claude-execution.json');
+    assert.equal(two.mode, 'RESUME');
+    assert.equal(two.continuity.verdict, 'VERIFIED');
+    assert.equal(two.command.args[two.command.args.indexOf('--conversation') + 1], 'aaaaaaaa-0000-4000-8000-000000000001');
+
+    const ev = await events(projectPath);
+    assert.equal(ev.find((e) => e.event === 'RUN_STARTED')?.executor, 'antigravity');
+    const sent = ev.find((e) => e.event === 'PROMPT_SENT');
+    assert.match(String(sent?.detail), /Prompt passed to Antigravity CLI on its command line at spawn/);
+    assert.deepEqual((ev.find((e) => e.event === 'RUN_STARTED') as { models?: unknown }).models, { claude: 'must-be-ignored', opencode: 'also-ignored' }, 'the config is echoed as written');
+  }));
+
+test('Antigravity failure that exits non-zero stops the run with its message; answer-in-chat is REPORT_INVALID', () =>
+  withProject(async (projectPath) => {
+    const failed = await engine(projectPath, withExecutor('antigravity'), { prefix: FAKE_AGY, claudeEnv: { FAKE_AGY_MODE: 'error-exit' } }).start({ task: 'do it', maxIterations: 1 });
+    assert.equal(failed.kind === 'COMPLETED' && failed.errorCode, 'CLAUDE_RUN_FAILED:NON_ZERO_EXIT');
+    assert.match(failed.kind === 'COMPLETED' ? (failed.errorMessage ?? '') : '', /not logged in/);
+  }).then(() =>
+    withProject(async (projectPath) => {
+      const o = await engine(projectPath, withExecutor('antigravity'), { prefix: FAKE_AGY, claudeEnv: { FAKE_AGY_MODE: 'answer-in-chat' } }).start({ task: 'do it', maxIterations: 1 });
+      assert.equal(o.kind === 'COMPLETED' && o.errorCode, 'REPORT_INVALID');
+    }),
+  ));

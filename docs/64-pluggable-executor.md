@@ -79,13 +79,11 @@ The contract exists because the two CLIs differ in ways the orchestrator must no
 
 ## 5. Not supported (and why)
 
-- **Antigravity (`agy`)**: `agy --help` shows `--print` (one prompt, non-interactive) and
-  `--conversation <id>` (resume), but no machine-readable output format and no way for the caller to
-  choose or read back a conversation id. AI Bridge's session tracking, continuity evidence and
-  recovery would be guesses, so it is not offered. Adding it needs a CLI that exposes the id.
+- **Antigravity (`agy`)**: first judged unsupported from `--help` alone; probing the real CLI showed a
+  trustworthy conversation id in its `--log-file`, so it **is** supported — see docs/65 (which also holds the
+  recipe for adding the next executor).
 - **Gemini CLI, Cursor CLI, …**: not installed here, so nothing was verified. The contract is the
-  extension point: add the id to `EXECUTOR_PROVIDERS`, a row to `EXECUTOR_PROVIDER_INFO`, a permission
-  provider, an adapter, a detection adapter, and the doctor branch.
+  extension point; the step-by-step recipe is docs/65 §5.
 - Reviewer other than Codex/ChatGPT.
 
 ## 6. Known limitations (not hidden)

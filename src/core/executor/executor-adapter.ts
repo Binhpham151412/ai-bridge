@@ -13,7 +13,7 @@ import type { PermissionPolicy, PermissionProvider, ProviderPermissionCapability
  * values/types) the renderer.
  */
 
-export const EXECUTOR_PROVIDERS = ['claude-code', 'opencode'] as const;
+export const EXECUTOR_PROVIDERS = ['claude-code', 'opencode', 'antigravity'] as const;
 export type ExecutorProviderId = (typeof EXECUTOR_PROVIDERS)[number];
 
 /** The product default — what every project that never set `executor` has always used. */
@@ -31,6 +31,9 @@ export function isExecutorProviderId(value: unknown): value is ExecutorProviderI
  */
 export type SessionIdAssignment = 'caller' | 'cli';
 
+/** How the prompt reaches the CLI: piped to stdin, or as an argument on its command line. */
+export type PromptChannel = 'stdin' | 'argv';
+
 export interface ExecutorProviderInfo {
   displayName: string;
   /** Used in event/log sentences: "<cliLabel> CLI process started". */
@@ -40,8 +43,13 @@ export interface ExecutorProviderInfo {
   /** The key under `permissions` and `models` in `.ai-bridge/config.json`. */
   configKey: PermissionProvider;
   sessionIdAssignment: SessionIdAssignment;
+  promptChannel: PromptChannel;
+  /** false = the CLI has no flag to choose a model (it uses its own setting); AI Bridge sends none. */
+  supportsModel: boolean;
   /** Short, user-facing hint about how the model is written for this CLI. */
   modelHint: string;
+  /** Doctor check names for this CLI: [executable check, sign-in check]. */
+  doctorChecks: readonly [string, string];
   /** Command the user runs to sign in (never run by AI Bridge itself). */
   loginHint: string;
 }
@@ -53,7 +61,10 @@ export const EXECUTOR_PROVIDER_INFO: Record<ExecutorProviderId, ExecutorProvider
     executableName: 'claude',
     configKey: 'claude',
     sessionIdAssignment: 'caller',
+    promptChannel: 'stdin',
+    supportsModel: true,
     modelHint: 'an alias or id such as "opus" or "claude-opus-5-5"',
+    doctorChecks: ['claude-cli', 'claude-auth'],
     loginHint: 'claude auth login --claudeai',
   },
   opencode: {
@@ -62,10 +73,32 @@ export const EXECUTOR_PROVIDER_INFO: Record<ExecutorProviderId, ExecutorProvider
     executableName: 'opencode',
     configKey: 'opencode',
     sessionIdAssignment: 'cli',
+    promptChannel: 'stdin',
+    supportsModel: true,
     modelHint: 'written as provider/model, e.g. "anthropic/claude-opus-5-5"',
+    doctorChecks: ['opencode-cli', 'opencode-auth'],
     loginHint: 'opencode auth login',
   },
+  antigravity: {
+    displayName: 'Antigravity',
+    cliLabel: 'Antigravity',
+    executableName: 'agy',
+    configKey: 'antigravity',
+    sessionIdAssignment: 'cli',
+    promptChannel: 'argv',
+    supportsModel: false,
+    modelHint: 'chosen inside Antigravity itself (the CLI has no model flag)',
+    doctorChecks: ['antigravity-cli', 'antigravity-auth'],
+    loginHint: 'agy (opens its interactive sign-in)',
+  },
 };
+
+/** The report contract and the prompt as ONE text, for a CLI that has no separate system-prompt
+ * channel. Nothing in the prompt is changed; the contract is simply put in front of it. */
+export function prependReportContract(prompt: string, contract: string | undefined): string {
+  if (contract === undefined || contract === '') return prompt;
+  return `${contract}\n\n---\n\n${prompt}`;
+}
 
 export interface ExecutorRunOptions {
   cwd: string;
@@ -98,6 +131,8 @@ export type ExecutorRunErrorCode =
   | 'SESSION_MISMATCH'
   /** The CLI exited 0 but its own event stream reported an error (OpenCode does this). */
   | 'CLI_REPORTED_ERROR'
+  /** The prompt would not fit on the command line of a CLI that takes it as an argument. Nothing was spawned. */
+  | 'INPUT_TOO_LARGE'
   /** A `cli`-assigned NEW session whose id the CLI never reported — it could never be resumed. */
   | 'NO_SESSION_ID';
 
@@ -132,6 +167,10 @@ export interface ExecutorRunResult {
   promptDeliveryError: string | null;
   /** The CLI's final message text, when it emitted one (success or not). */
   finalMessage: string | null;
+  /** Where the prompt went. Absent = stdin (the original behaviour). */
+  inputChannel?: PromptChannel;
+  /** The model the CLI itself reported during this call (not read from stdout by the orchestrator). */
+  reportedModel?: string | null;
   executable: string;
   args: string[];
 }
@@ -139,6 +178,7 @@ export interface ExecutorRunResult {
 export interface ExecutorAdapter {
   readonly provider: ExecutorProviderId;
   readonly sessionIdAssignment: SessionIdAssignment;
+  readonly promptChannel: PromptChannel;
   /** What the installed CLI declares it can do for each permission policy. */
   readonly permissionCapability: ProviderPermissionCapability;
   run(options: ExecutorRunOptions): Promise<ExecutorRunResult>;

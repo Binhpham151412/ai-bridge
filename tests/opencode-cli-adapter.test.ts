@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -115,8 +115,10 @@ test('the stream parsers are tolerant: plain lines are skipped, nothing is inven
   assert.equal(new OpenCodeCliAdapter({ executable: 'x' }).findReportedModel(), null);
 });
 
-test('the argv never contains the prompt (it travels on stdin)', async () => {
-  const log = path.join(mkdtempSync(path.join(tmpdir(), 'fake-oc-')), 'argv.jsonl');
+test('the argv never contains the prompt (it travels on stdin)', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'fake-oc-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'argv.jsonl');
   await adapter().run({ ...base, prompt: 'SECRET-PROMPT-TEXT', sessionId: null, resume: false, env: { ...process.env, FAKE_OPENCODE_LOG: log } });
   assert.doesNotMatch(readFileSync(log, 'utf8'), /SECRET-PROMPT-TEXT/);
 });

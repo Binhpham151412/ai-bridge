@@ -126,7 +126,7 @@ export function StartRunDialog({ onClose }: { onClose: () => void }) {
         <p className="hint">Timeout là cấu hình Core của project (Settings). Core chạy System Check trước khi bắt đầu và từ chối nếu chưa PASS.</p>
         {config && (
           <p className={Object.values(config.permissions).includes('bypass') ? 'warn' : 'hint'} role="note" data-testid="start-permissions">
-            {executor.cliLabel} model: {config.models?.[executor.configKey as 'claude' | 'opencode'] ?? `theo cấu hình ${executor.cliLabel} CLI`} · Permissions — {executor.cliLabel}: {config.permissions[executor.configKey]}, Codex: {config.permissions.codex} (Settings).
+            {executor.cliLabel} model: {executor.supportsModel ? (config.models?.[executor.configKey as 'claude' | 'opencode'] ?? `theo cấu hình ${executor.cliLabel} CLI`) : 'do Antigravity tự chọn'} · Permissions — {executor.cliLabel}: {config.permissions[executor.configKey]}, Codex: {config.permissions.codex} (Settings).
             {Object.values(config.permissions).includes('bypass') ? ` ${BYPASS_WARNING}` : ''}
           </p>
         )}

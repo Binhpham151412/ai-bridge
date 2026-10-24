@@ -1,5 +1,5 @@
 import { runProcess } from '../../automation/process-runner.ts';
-import type { ExecutorAdapter, ExecutorRunErrorCode, ExecutorRunOptions, ExecutorRunResult } from '../../core/executor/executor-adapter.ts';
+import { prependReportContract, type ExecutorAdapter, type ExecutorRunErrorCode, type ExecutorRunOptions, type ExecutorRunResult } from '../../core/executor/executor-adapter.ts';
 import type { PermissionPolicy, ProviderPermissionCapability } from '../../core/permissions/permission-policy.ts';
 
 /**
@@ -103,10 +103,7 @@ export function findOpenCodeFinalMessage(stdout: string): string | null {
 }
 
 /** OpenCode has no flag for a separate system prompt, so the report contract travels with the prompt. */
-export function buildOpenCodeInput(prompt: string, appendSystemPrompt: string | undefined): string {
-  if (appendSystemPrompt === undefined || appendSystemPrompt === '') return prompt;
-  return `${appendSystemPrompt}\n\n---\n\n${prompt}`;
-}
+export const buildOpenCodeInput = prependReportContract;
 
 /**
  * Drives `opencode run --format json` as the executor: the prompt (with the report contract in
@@ -120,6 +117,7 @@ export function buildOpenCodeInput(prompt: string, appendSystemPrompt: string | 
 export class OpenCodeCliAdapter implements ExecutorAdapter {
   readonly provider = 'opencode' as const;
   readonly sessionIdAssignment = 'cli' as const;
+  readonly promptChannel = 'stdin' as const;
   readonly permissionCapability = OPENCODE_PERMISSION_CAPABILITY;
   private readonly executable: string;
   private readonly commandArgsPrefix: string[];

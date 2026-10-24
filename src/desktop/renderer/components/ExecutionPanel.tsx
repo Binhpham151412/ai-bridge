@@ -79,7 +79,7 @@ export function ExecutionPanel({
 
   const inputMatches = inputArtifact !== null && inputArtifact.sha256 === record.input.sha256;
   let deliveryState: Check = 'unknown';
-  if (record.input.delivery === 'STDIN_FLUSHED_AND_CLOSED') deliveryState = 'ok';
+  if (record.input.delivery === 'STDIN_FLUSHED_AND_CLOSED' || record.input.delivery === 'ARGV_AT_SPAWN') deliveryState = 'ok';
   else if (record.input.delivery === 'STDIN_ERROR') deliveryState = 'fail';
   else if (record.input.delivery === 'PENDING' && running) deliveryState = 'pending';
   const mismatch = record.continuity.verdict === 'MISMATCH';
@@ -95,7 +95,8 @@ export function ExecutionPanel({
   let pidText = '—';
   if (record.process.pid !== null) pidText = running ? String(record.process.pid) : `— (đã kết thúc; pid ${record.process.pid})`;
   let deliveryNote = 'không có bằng chứng';
-  if (deliveryState === 'ok') deliveryNote = `đủ ${record.input.bytes} bytes đã vào pipe stdin và stdin đã đóng — không chứng minh CLI đã đọc/xử lý`;
+  if (record.input.delivery === 'ARGV_AT_SPAWN') deliveryNote = `prompt (${record.input.bytes} bytes) nằm trong tham số dòng lệnh của process đã khởi chạy — CLI này không đọc stdin; không chứng minh CLI đã đọc/xử lý`;
+  else if (deliveryState === 'ok') deliveryNote = `đủ ${record.input.bytes} bytes đã vào pipe stdin và stdin đã đóng — không chứng minh CLI đã đọc/xử lý`;
   else if (record.input.deliveryError) deliveryNote = `lỗi stdin: ${record.input.deliveryError}`;
   else if (deliveryState === 'pending') deliveryNote = 'đang chờ';
   const noun = agent === 'claude' ? 'PROMPT' : 'INPUT';
@@ -177,7 +178,7 @@ export function ExecutionPanel({
           note={inputArtifact === null ? 'không đọc được file' : inputMatches ? 'file trên đĩa khớp SHA-256 đã ghi' : 'file trên đĩa KHÔNG khớp SHA-256 đã ghi'}
         />
         <Step state={record.process.pid !== null ? 'ok' : running ? 'pending' : 'unknown'} label={`${upper} PROCESS STARTED`} note={record.process.pid !== null ? `pid ${record.process.pid}` : undefined} />
-        <Step state={deliveryState} label={`${noun} WRITTEN TO ${upper} STDIN`} note={deliveryNote} />
+        <Step state={deliveryState} label={record.input.delivery === 'ARGV_AT_SPAWN' ? `${noun} PASSED TO ${upper} ON ITS COMMAND LINE` : `${noun} WRITTEN TO ${upper} STDIN`} note={deliveryNote} />
         <Step state={sessionState} label={`${idLabel.toUpperCase()} CONFIRMED`} note={evidenceText} />
         <Step
           state={finishedState}

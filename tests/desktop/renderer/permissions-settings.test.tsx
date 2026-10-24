@@ -14,7 +14,7 @@ import { FakeMain, click, makeSnapshot, q, render } from './harness.tsx';
 // M5.10.1 — Settings → "AI Execution Permissions" and the per-execution audit row.
 
 function settings(base: { claude: 'ask' | 'bypass'; codex: 'ask' | 'bypass' }): SettingsView {
-  const permissions = { ...base, opencode: 'bypass' as const };
+  const permissions = { ...base, opencode: 'bypass' as const, antigravity: 'bypass' as const };
   return {
     app: { defaultProjectPath: null },
     project: {
@@ -70,7 +70,7 @@ test('changing a provider to ask and saving sends the permissions through the va
     const call = main.invoked.find((c) => c.channel === 'bridge:saveProjectConfig');
     assert.ok(call);
     const sent = (call.args[0] as { config: Record<string, unknown> }).config;
-    assert.deepEqual(sent.permissions, { claude: 'ask', codex: 'bypass', opencode: 'bypass' });
+    assert.deepEqual(sent.permissions, { claude: 'ask', codex: 'bypass', opencode: 'bypass', antigravity: 'bypass' });
     assert.equal(sent.maxIterations, 10, 'scalar fields are still sent as numbers, untouched');
   } finally {
     await unmount();

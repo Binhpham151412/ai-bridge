@@ -21,7 +21,7 @@ export type PermissionPolicy = (typeof PERMISSION_POLICIES)[number];
 export const PERMISSION_POLICY_REQUESTS = ['inherit', 'ask', 'bypass'] as const;
 export type PermissionPolicyRequest = (typeof PERMISSION_POLICY_REQUESTS)[number];
 
-export const PERMISSION_PROVIDERS = ['claude', 'codex', 'opencode'] as const;
+export const PERMISSION_PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity'] as const;
 export type PermissionProvider = (typeof PERMISSION_PROVIDERS)[number];
 
 export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = 'bypass';
@@ -30,7 +30,7 @@ export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = 'bypass';
 export type ProviderPermissionSettings = Record<PermissionProvider, PermissionPolicy>;
 
 export function defaultProviderPermissions(): ProviderPermissionSettings {
-  return { claude: DEFAULT_PERMISSION_POLICY, codex: DEFAULT_PERMISSION_POLICY, opencode: DEFAULT_PERMISSION_POLICY };
+  return { claude: DEFAULT_PERMISSION_POLICY, codex: DEFAULT_PERMISSION_POLICY, opencode: DEFAULT_PERMISSION_POLICY, antigravity: DEFAULT_PERMISSION_POLICY };
 }
 
 export function isPermissionPolicy(value: unknown): value is PermissionPolicy {

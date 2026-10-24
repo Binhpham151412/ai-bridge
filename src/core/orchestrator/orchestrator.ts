@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { EXECUTOR_PROVIDER_INFO, type ExecutorAdapter } from '../executor/executor-adapter.ts';
 import { CODEX_PERMISSION_CAPABILITY, codexPermissionArgs, type CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
-import { resolvePermissionPolicy, type ProviderPermissionCapability, type ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
+import { resolvePermissionPolicy, type PermissionProvider, type ProviderPermissionCapability, type ResolvedPermissionPolicy } from '../permissions/permission-policy.ts';
 import { ReportValidator } from '../../reports/report-validator.ts';
 import { isolateStaleReport, type StaleReportMove } from '../../reports/stale-report.ts';
 import { CodexResponseParser } from '../../reports/codex-response-parser.ts';
@@ -180,7 +180,7 @@ export interface OrchestratorOptions {
   crashInjection?: { at: CrashPoint; onTrigger: () => void };
 }
 
-function defaultPolicy(provider: 'claude' | 'codex' | 'opencode'): ResolvedPermissionPolicy {
+function defaultPolicy(provider: PermissionProvider): ResolvedPermissionPolicy {
   const r = resolvePermissionPolicy({ provider });
   if (!r.ok) throw new Error(r.reason);
   return r.policy;
@@ -399,6 +399,14 @@ export class Orchestrator {
               `${cli} CLI process started — pid ${pid}, ${isResume ? `resuming ${cli} session ${sessionIdForThisRun}` : sessionIdForThisRun === null ? `new ${cli} session (the CLI will report its id)` : `new ${cli} session ${sessionIdForThisRun} (requested)`}`,
               { pid, claudeSessionId: sessionIdForThisRun, mode: isResume ? 'RESUME' : 'NEW' },
             );
+            // A CLI that takes the prompt as an argument has it from the moment it spawns (there is no stdin flush).
+            if (executor.promptChannel === 'argv') {
+              emitNow('PROMPT_SENT', iteration, `Prompt passed to ${cli} CLI on its command line at spawn — ${promptBytes} bytes, sha256 ${short(promptSha256)}`, {
+                promptBytes,
+                promptSha256,
+                claudeSessionId: sessionIdForThisRun,
+              });
+            }
             maybeCrash('AFTER_CLAUDE_STARTED');
           },
           onInputFlushed: (bytes) => {
@@ -433,12 +441,13 @@ export class Orchestrator {
             reportedSessionId: claudeResult.reportedSessionId,
             inputDelivered: claudeResult.promptDelivered,
             inputDeliveryError: claudeResult.promptDeliveryError,
+            inputChannel: claudeResult.inputChannel,
             executable: claudeResult.executable,
             args: claudeResult.args,
           },
           { stdoutFile: claudeStdoutPath, stderrFile: claudeStderrPath },
         );
-        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: executor.findReportedModel(claudeResult.stdout) } };
+        claudeExec = { ...claudeExec, model: { requested: o.claudeModel ?? null, reported: claudeResult.reportedModel ?? executor.findReportedModel(claudeResult.stdout) } };
         await claudeExecWriter.write(claudeExec);
         claudeDiagnostics = buildDiagnostics(claudeExec, { stdout: claudeResult.stdout, stderr: claudeResult.stderr, finalMessage: claudeResult.finalMessage }, claudeExecPath);
         if (isResume) {

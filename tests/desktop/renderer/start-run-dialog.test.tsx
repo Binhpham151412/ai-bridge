@@ -20,7 +20,7 @@ const SETTINGS: SettingsView = {
       reportMaxBytes: 1_048_576,
       stopOnUncommittedChanges: false,
       requireGitRepository: false,
-      permissions: { claude: 'bypass', codex: 'bypass', opencode: 'bypass' },
+      permissions: { claude: 'bypass', codex: 'bypass', opencode: 'bypass', antigravity: 'bypass' },
       models: { claude: null, opencode: null },
       executor: { provider: 'claude-code' },
     },
