@@ -248,6 +248,21 @@ prompt and raw response (lazy-loaded one at a time), a session index, and a whol
 final report once the run ends.
 See [docs/13-m4.2-development-journal.md](docs/13-m4.2-development-journal.md).
 
+## Claude Code plugin
+
+The same Codex review loop, inside the Claude Code session you are working in: type
+`/bridge <task>`, and each time Claude finishes a turn Codex reviews it and sends the next
+instruction, until DONE or NEED_HUMAN (`/bridge stop` ends it early). The optional
+`ai-bridge-panel` plugin shows the loop in a pane beside the chat. See
+[docs/66-claude-code-plugin.md](docs/66-claude-code-plugin.md).
+
+```bash
+pnpm build:claude-plugin
+claude plugin marketplace add "<path to this repo>"
+claude plugin install ai-bridge@ai-bridge
+claude plugin install ai-bridge-panel@ai-bridge
+```
+
 ## Known limitations
 
 See the "Known limitations" section of
