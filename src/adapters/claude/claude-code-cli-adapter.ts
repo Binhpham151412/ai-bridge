@@ -1,4 +1,5 @@
 import { runProcess } from '../../automation/process-runner.ts';
+import type { ExecutorAdapter, ExecutorRunErrorCode, ExecutorRunOptions, ExecutorRunResult } from '../../core/executor/executor-adapter.ts';
 import type { PermissionPolicy, ProviderPermissionCapability } from '../../core/permissions/permission-policy.ts';
 
 /**
@@ -44,64 +45,10 @@ export interface ClaudeCodeCliAdapterOptions {
   commandArgsPrefix?: string[];
 }
 
-export interface ClaudeRunOptions {
-  cwd: string;
-  prompt: string;
-  sessionId: string;
-  resume: boolean;
-  timeoutMs: number;
-  env?: NodeJS.ProcessEnv;
-  /** Sent via --append-system-prompt (a channel separate from stdin) — e.g. the report-file contract. */
-  appendSystemPrompt?: string;
-  /** M5.10.1: the resolved provider-neutral policy; mapped by `claudePermissionArgs`. Omitted → no permission flag. */
-  permissionPolicy?: PermissionPolicy;
-  /** docs/62: sent as `--model <model>`. Omitted → no flag: the CLI's own setting decides. */
-  model?: string;
-  /** Sent as --allowedTools <a> <b> ... */
-  allowedTools?: string[];
-  /** Sent as --disallowedTools <a> <b> ... */
-  disallowedTools?: string[];
-  onSpawn?: (pid: number) => void;
-  /** The prompt was fully written to the CLI's stdin and stdin closed (see runProcess). */
-  onInputFlushed?: (bytes: number) => void;
-}
-
-export type ClaudeRunErrorCode = 'SPAWN_FAILED' | 'TIMEOUT' | 'NON_ZERO_EXIT' | 'BAD_JSON' | 'NO_RESULT_EVENT' | 'SESSION_MISMATCH';
-
-export interface ClaudeRunResult {
-  ok: boolean;
-  sessionId: string | null;
-  exitCode: number | null;
-  timedOut: boolean;
-  errorCode: ClaudeRunErrorCode | null;
-  receivedPrompt: string | null;
-  receivedSystemPrompt: string | null;
-  receivedPermissionMode: string | null;
-  receivedAllowedTools: string[] | null;
-  receivedDisallowedTools: string[] | null;
-  stderr: string;
-  durationMs: number;
-  /** Raw stream-json stdout (bounded by runProcess's maxBufferBytes) — the CLI's own
-   * event output, persisted by the orchestrator as "CLI output". Not a transcript. */
-  stdout: string;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
-  /** The session id the CLI itself reported in any stream event (init or result), even
-   * when the run failed — null when the CLI never reported one. Never invented. */
-  reportedSessionId: string | null;
-  pid: number | null;
-  signal: string | null;
-  startedAt: string;
-  endedAt: string;
-  promptBytes: number;
-  /** Prompt bytes flushed to the CLI's stdin and stdin closed without error. */
-  promptDelivered: boolean;
-  promptDeliveryError: string | null;
-  /** The CLI's final `result` message text, when it emitted one (success or not). */
-  finalMessage: string | null;
-  executable: string;
-  args: string[];
-}
+/** The shared executor contract (docs/64); the Claude names are kept for existing callers. */
+export type ClaudeRunOptions = ExecutorRunOptions;
+export type ClaudeRunErrorCode = ExecutorRunErrorCode;
+export type ClaudeRunResult = ExecutorRunResult;
 
 /** Tolerant scan (never throws, skips non-JSON lines) for the session id the CLI
  * reported — prefers the final `result` event, falls back to `system/init`. */
@@ -167,7 +114,10 @@ interface StreamEvent {
  * ambiguity — bad JSON, a missing/mismatched session id, a non-zero exit, a timeout —
  * is surfaced as a distinct errorCode instead of being guessed at or retried.
  */
-export class ClaudeCodeCliAdapter {
+export class ClaudeCodeCliAdapter implements ExecutorAdapter {
+  readonly provider = 'claude-code' as const;
+  readonly sessionIdAssignment = 'caller' as const;
+  readonly permissionCapability = CLAUDE_PERMISSION_CAPABILITY;
   private readonly executable: string;
   private readonly commandArgsPrefix: string[];
 
@@ -176,9 +126,24 @@ export class ClaudeCodeCliAdapter {
     this.commandArgsPrefix = options.commandArgsPrefix ?? [];
   }
 
+  permissionArgs(policy: PermissionPolicy): string[] {
+    return claudePermissionArgs(policy);
+  }
+
+  findReportedModel(stdout: string): string | null {
+    return findReportedClaudeModel(stdout);
+  }
+
+  commandLabel(sessionId: string | null, resume: boolean): string {
+    return `claude -p --output-format stream-json ${resume ? '--resume' : '--session-id'} ${sessionId ?? ''}`.trimEnd();
+  }
+
   async run(options: ClaudeRunOptions): Promise<ClaudeRunResult> {
+    // Claude takes the session id from the caller; a null id would have no `--session-id` to send.
+    if (options.sessionId === null) throw new Error('ClaudeCodeCliAdapter needs a caller-assigned sessionId');
+    const sessionId = options.sessionId;
     const sessionFlag = options.resume ? '--resume' : '--session-id';
-    const args = [...this.commandArgsPrefix, '-p', '--output-format', 'stream-json', '--verbose', sessionFlag, options.sessionId];
+    const args = [...this.commandArgsPrefix, '-p', '--output-format', 'stream-json', '--verbose', sessionFlag, sessionId];
     if (options.appendSystemPrompt !== undefined) args.push('--append-system-prompt', options.appendSystemPrompt);
     if (options.permissionPolicy !== undefined) args.push(...claudePermissionArgs(options.permissionPolicy));
     if (options.model !== undefined) args.push('--model', options.model);
@@ -258,7 +223,7 @@ export class ClaudeCodeCliAdapter {
     const disallowedToolsEvent = events.find((e) => e.type === 'debug_disallowed_tools');
     const receivedDisallowedTools = Array.isArray(disallowedToolsEvent?.tools) ? (disallowedToolsEvent.tools as string[]) : null;
 
-    if (reportedSessionId !== options.sessionId) return fail('SESSION_MISMATCH', reportedSessionId, receivedPrompt);
+    if (reportedSessionId !== sessionId) return fail('SESSION_MISMATCH', reportedSessionId, receivedPrompt);
 
     return {
       ok: true,

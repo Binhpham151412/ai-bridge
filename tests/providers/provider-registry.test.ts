@@ -37,11 +37,11 @@ function futureAdapter(id: string, behaviour: { diagnose?: (ctx: ProviderDiagnos
   return { adapter, calls };
 }
 
-test('registry: default registry has Claude Code then Codex, and constructing it spawns nothing', async () => {
+test('registry: default registry has Claude Code, OpenCode, then Codex, and constructing it spawns nothing', async () => {
   let spawned = 0;
   const ctx = { ...fakeContext(), runCommand: async () => { spawned++; throw new Error('must not spawn'); } };
   const r = createDefaultProviderRegistry(ctx);
-  assert.deepEqual(r.listProviders().map((d) => d.id), ['claude-code', 'codex']);
+  assert.deepEqual(r.listProviders().map((d) => d.id), ['claude-code', 'opencode', 'codex']);
   assert.equal(r.has('claude-code'), true);
   assert.equal(r.has('grok'), false);
   assert.equal(r.getCachedStatus('codex'), null);
@@ -134,9 +134,9 @@ test('registry: multiple providers — getAllProviderStatuses runs real fake CLI
   const r = createDefaultProviderRegistry(fakeContext({ env: { FAKE_DIAG_LOG: log } }));
   r.register(future.adapter);
   const all = await r.getAllProviderStatuses();
-  assert.deepEqual(all.map((s) => [s.provider, s.readiness]), [['claude-code', 'READY'], ['codex', 'READY'], ['grok', 'READY']]);
+  assert.deepEqual(all.map((s) => [s.provider, s.readiness]), [['claude-code', 'READY'], ['opencode', 'READY'], ['codex', 'READY'], ['grok', 'READY']]);
   const spawnedAfterFirst = readInvocations(log).length;
-  assert.equal(spawnedAfterFirst, 4, 'version + auth for each of the two CLI providers');
+  assert.equal(spawnedAfterFirst, 6, 'version + auth for each of the three CLI providers');
 
   await r.getAllProviderStatuses();
   assert.equal(readInvocations(log).length, spawnedAfterFirst, 'cached read spawns nothing');

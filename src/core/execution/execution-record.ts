@@ -161,6 +161,10 @@ export interface ExecutionRecord {
   /** M5.10.1: the permission policy this call ran under and the exact CLI flags it became.
    * Absent in pre-M5.10.1 records. */
   permission?: ExecutionPermission;
+  /** docs/64: the executor CLI that filled the developer slot of this call (`claude-code`,
+   * `opencode`). `agent: 'claude'` is only the slot's historical name. Absent in older records
+   * and on reviewer (Codex) records. */
+  provider?: string;
   /** docs/62 (Claude only): the model AI Bridge asked for (`--model`; null = the CLI's own
    * setting) and the model the CLI itself reported in its output (null = not reported).
    * Absent in older records. */

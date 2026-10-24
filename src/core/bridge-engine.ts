@@ -4,11 +4,14 @@ import { readdir, readFile, stat, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { checkEnvForApiKeys, parseClaudeAuthStatus, parseCodexLoginStatus } from './cost-guard.ts';
 import { resolveExecutable } from './preflight/executable-resolver.ts';
-import { runDoctorChecks, type DoctorCheckOutcome, type DoctorReport } from './preflight/doctor.ts';
+import { runDoctorChecks, type DoctorCheckDefinition, type DoctorCheckOutcome, type DoctorReport } from './preflight/doctor.ts';
 import { checkGitStatus } from './preflight/git-safety.ts';
 import { runProcess, killProcessTree } from '../automation/process-runner.ts';
 import { SessionManager } from './session-manager/session-manager.ts';
 import { CLAUDE_PERMISSION_CAPABILITY, ClaudeCodeCliAdapter } from '../adapters/claude/claude-code-cli-adapter.ts';
+import { OPENCODE_PERMISSION_CAPABILITY, OpenCodeCliAdapter } from '../adapters/opencode/opencode-cli-adapter.ts';
+import { DEFAULT_EXECUTOR_PROVIDER, EXECUTOR_PROVIDER_INFO, type ExecutorAdapter, type ExecutorProviderId } from './executor/executor-adapter.ts';
+import { createRealExecutableLocator } from './providers/executable-discovery.ts';
 import { CODEX_PERMISSION_CAPABILITY, CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
 import { Orchestrator, CRASH_POINTS, type LogEntry, type OrchestratorState, type OrchestratorFinalStatus, type CrashPoint } from './orchestrator/orchestrator.ts';
 import { appendLogLine } from './logger/logger.ts';
@@ -51,7 +54,11 @@ const execFileAsync = promisify(execFile);
 
 export interface Preflight {
   report: DoctorReport;
+  /** The developer-slot executable — the selected executor's CLI (Claude by default). The
+   * name is the slot's historical one; `executor` says which CLI it is. */
   claudeExe: string | null;
+  /** docs/64: which executor `claudeExe` belongs to. Absent → Claude Code. */
+  executor?: ExecutorProviderId;
   codexExe: string | null;
   config: AiBridgeConfig;
   configErrors: string[];
@@ -113,6 +120,20 @@ async function realClaudeAuthCheck(claudeExe: string): Promise<DoctorCheckOutcom
   return { status: 'UNKNOWN', detail: `unrecognized "claude auth status" output: ${r.stdout.slice(0, 200)}` };
 }
 
+/** `opencode auth list` prints a coloured box and a line like "8 credentials". OpenCode can also be
+ * authenticated by its config or environment, so "none" is a WARNING (some models need none) and an
+ * unrecognized output is a WARNING too — neither blocks a run; a missing executable does. */
+async function realOpenCodeAuthCheck(opencodeExe: string): Promise<DoctorCheckOutcome> {
+  const r = await runProcess({ command: opencodeExe, args: ['auth', 'list'], timeoutMs: 15000 });
+  if (r.exitCode !== 0) return { status: 'WARNING', detail: `"opencode auth list" exited ${r.exitCode}` };
+  // eslint-disable-next-line no-control-regex
+  const text = r.stdout.replace(/\u001b\[[0-9;]*m/g, '');
+  const m = /(\d+)\s+credentials?/i.exec(text);
+  if (!m) return { status: 'WARNING', detail: `unrecognized "opencode auth list" output: ${text.slice(0, 200)}` };
+  if (Number(m[1]) === 0) return { status: 'WARNING', detail: 'no stored credentials. Run: opencode auth login (models that need none still work)' };
+  return { status: 'PASS', detail: `${m[1]} stored credential(s) (not verified by a model call)` };
+}
+
 async function realCodexAuthCheck(codexExe: string): Promise<DoctorCheckOutcome> {
   const r = await runProcess({ command: codexExe, args: ['login', 'status'], timeoutMs: 15000 });
   const auth = parseCodexLoginStatus(r.stdout || r.stderr);
@@ -122,11 +143,18 @@ async function realCodexAuthCheck(codexExe: string): Promise<DoctorCheckOutcome>
   return { status: 'UNKNOWN', detail: `unrecognized "codex login status" output: ${(r.stdout || r.stderr).slice(0, 200)}` };
 }
 
-async function realRunDoctor(projectPath: string): Promise<Preflight> {
+interface DoctorOptions {
+  /** Check this executor instead of the one in the project's config (resume uses the run's own). */
+  executor?: ExecutorProviderId;
+}
+
+async function realRunDoctor(projectPath: string, options: DoctorOptions = {}): Promise<Preflight> {
   const p = enginePaths(projectPath);
-  const claudeExe = await resolveExecutable('claude', { where: realWhereDep });
-  const codexExe = await resolveExecutable('codex', { where: realWhereDep, globCodexBin: realGlobCodexBinDep });
   const { config, errors: configErrors } = await loadConfig(p.configPath, { readFile: (f) => readFile(f, 'utf8') });
+  // A resumed run keeps the executor it started with (its session ids belong to that CLI).
+  const executor = options.executor ?? config.executor.provider;
+  const claudeExe = executor === 'claude-code' ? await resolveExecutable('claude', { where: realWhereDep }) : await createRealExecutableLocator()(EXECUTOR_PROVIDER_INFO[executor].executableName);
+  const codexExe = await resolveExecutable('codex', { where: realWhereDep, globCodexBin: realGlobCodexBinDep });
   const git = await checkGitStatus(projectPath, {
     runGit: async (args, cwd) => {
       const r = await runProcess({ command: 'git', args, cwd, timeoutMs: 15000 });
@@ -143,8 +171,15 @@ async function realRunDoctor(projectPath: string): Promise<Preflight> {
         return c.blocked ? { status: 'BLOCKED', detail: `cost-risk env vars set: ${c.foundKeys.join(', ')}` } : { status: 'PASS', detail: 'no cost-risk env vars set' };
       },
     },
-    { name: 'claude-cli', run: async () => (claudeExe ? { status: 'PASS', detail: claudeExe } : { status: 'FAIL', detail: 'claude not found on PATH' }) },
-    { name: 'claude-auth', run: async () => (claudeExe ? realClaudeAuthCheck(claudeExe) : { status: 'UNKNOWN', detail: 'skipped: claude not found' }) },
+    ...((executor === 'claude-code'
+      ? [
+          { name: 'claude-cli', run: async () => (claudeExe ? { status: 'PASS', detail: claudeExe } : { status: 'FAIL', detail: 'claude not found on PATH' }) },
+          { name: 'claude-auth', run: async () => (claudeExe ? realClaudeAuthCheck(claudeExe) : { status: 'UNKNOWN', detail: 'skipped: claude not found' }) },
+        ]
+      : [
+          { name: 'opencode-cli', run: async () => (claudeExe ? { status: 'PASS', detail: claudeExe } : { status: 'FAIL', detail: 'opencode not found on PATH' }) },
+          { name: 'opencode-auth', run: async () => (claudeExe ? realOpenCodeAuthCheck(claudeExe) : { status: 'UNKNOWN', detail: 'skipped: opencode not found' }) },
+        ]) as DoctorCheckDefinition[]),
     {
       name: 'codex-cli',
       run: async () => (codexExe ? { status: 'PASS', detail: codexExe } : { status: 'FAIL', detail: 'codex not found on PATH or under %LOCALAPPDATA%\\OpenAI\\Codex\\bin' }),
@@ -178,7 +213,7 @@ async function realRunDoctor(projectPath: string): Promise<Preflight> {
     },
   ]);
 
-  return { report, claudeExe, codexExe, config, configErrors, gitWarning: git.warning };
+  return { report, claudeExe, executor, codexExe, config, configErrors, gitWarning: git.warning };
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +242,7 @@ export interface BridgeEngineDeps {
    * checks, real git status). Tests supply a fake one instead of faking each of its
    * inner parts individually; doctor's own internals are already exhaustively unit
    * tested (doctor.test.ts, executable-resolver.test.ts, cost-guard.test.ts). */
-  runDoctor?: (projectPath: string) => Promise<Preflight>;
+  runDoctor?: (projectPath: string, options?: DoctorOptions) => Promise<Preflight>;
   isPidAlive?: (pid: number) => boolean;
   attemptGracefulStop?: (pid: number) => Promise<void>;
   /** Test-only: prefixes the claude/codex adapter's command with a fake-CLI script path
@@ -300,6 +335,8 @@ export interface BridgeStatus {
   maxIterations: number | null;
   /** What Claude and Codex are each doing right now (core/status/agent-activity.ts). */
   activity: AgentActivity;
+  /** docs/64: the executor CLI of this run's developer slot; absent when no run exists yet. */
+  executor?: ExecutorProviderId;
 }
 
 export type BridgeEventListener = (event: BridgeEvent) => void;
@@ -321,6 +358,9 @@ interface SessionState {
   correlation?: string;
   /** M5.10.1: the execution-level permission override, when one was given. */
   permissionPolicy?: PermissionPolicyRequest;
+  /** docs/64: the executor CLI this run started with; absent in state written before → Claude Code.
+   * A resume uses it, never the project's current setting (the session ids belong to that CLI). */
+  executor?: ExecutorProviderId;
   startedAt: string;
   updatedAt: string;
 }
@@ -334,9 +374,10 @@ export function isValidCorrelation(value: unknown): value is string {
 
 type RunPermissionPolicies = { claude: ResolvedPermissionPolicy; codex: ResolvedPermissionPolicy };
 
-/** M5.10.1: one resolution for both providers of a run; fails closed (INVALID_OPTIONS). */
-function resolveRunPermissions(requested: unknown, config: AiBridgeConfig): { ok: true; policies: RunPermissionPolicies } | { ok: false; reason: string } {
-  const claude = resolvePermissionPolicy({ provider: 'claude', requested, settings: config.permissions });
+/** M5.10.1: one resolution for both providers of a run; fails closed (INVALID_OPTIONS).
+ * The `claude` slot is the developer slot: it resolves the setting of the executor that fills it. */
+function resolveRunPermissions(requested: unknown, config: AiBridgeConfig, executor: ExecutorProviderId): { ok: true; policies: RunPermissionPolicies } | { ok: false; reason: string } {
+  const claude = resolvePermissionPolicy({ provider: EXECUTOR_PROVIDER_INFO[executor].configKey, requested, settings: config.permissions });
   if (!claude.ok) return { ok: false, reason: claude.reason };
   const codex = resolvePermissionPolicy({ provider: 'codex', requested, settings: config.permissions });
   if (!codex.ok) return { ok: false, reason: codex.reason };
@@ -384,7 +425,7 @@ export const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024;
  * `tests/architecture.test.ts`. One instance is scoped to one project directory.
  */
 interface ResolvedDeps {
-  runDoctor: (projectPath: string) => Promise<Preflight>;
+  runDoctor: (projectPath: string, options?: DoctorOptions) => Promise<Preflight>;
   isPidAlive: (pid: number) => boolean;
   attemptGracefulStop: (pid: number) => Promise<void>;
   claudeCommandArgsPrefix: string[];
@@ -446,7 +487,8 @@ export class BridgeEngine {
     if (preflight.report.overall !== 'PASS' || !preflight.claudeExe || !preflight.codexExe) {
       return { kind: 'BLOCKED_PREFLIGHT', doctorReport: preflight.report };
     }
-    const permissions = resolveRunPermissions(options.permissionPolicy, preflight.config);
+    const executor = preflight.executor ?? preflight.config.executor.provider;
+    const permissions = resolveRunPermissions(options.permissionPolicy, preflight.config, executor);
     if (!permissions.ok) return { kind: 'INVALID_OPTIONS', reason: permissions.reason };
 
     const lock = await acquireLock(p.lockPath);
@@ -467,6 +509,7 @@ export class BridgeEngine {
         logsDir: session.logsDir,
         initialPrompt: options.task,
         claudeExe: preflight.claudeExe,
+        executor,
         codexExe: preflight.codexExe,
         config: { ...preflight.config, maxIterations },
         correlation: options.correlation,
@@ -500,11 +543,13 @@ export class BridgeEngine {
       return { kind: 'NO_STATE' };
     }
 
-    const preflight = await this.deps.runDoctor(this.projectPath);
+    // docs/64: a run is resumed with the executor it started with (state written before → Claude Code).
+    const executor = state.executor ?? DEFAULT_EXECUTOR_PROVIDER;
+    const preflight = await this.deps.runDoctor(this.projectPath, { executor });
     if (preflight.report.overall !== 'PASS' || !preflight.claudeExe || !preflight.codexExe) {
       return { kind: 'BLOCKED_PREFLIGHT', doctorReport: preflight.report };
     }
-    const permissions = resolveRunPermissions(state.permissionPolicy, preflight.config);
+    const permissions = resolveRunPermissions(state.permissionPolicy, preflight.config, executor);
     if (!permissions.ok) return { kind: 'INVALID_OPTIONS', reason: permissions.reason };
 
     const lock = await acquireLock(p.lockPath);
@@ -531,6 +576,7 @@ export class BridgeEngine {
         logsDir,
         initialPrompt,
         claudeExe: preflight.claudeExe,
+        executor,
         codexExe: preflight.codexExe,
         // A resumed run keeps the cap it was started with (persisted since M4); older
         // state files without the field fall back to config, as before.
@@ -674,6 +720,7 @@ export class BridgeEngine {
       lastReportPath: state.lastReportPath,
       maxIterations: typeof state.maxIterations === 'number' ? state.maxIterations : null,
       activity: describeAgentActivity(displayStatus, state.status),
+      executor: state.executor ?? DEFAULT_EXECUTOR_PROVIDER,
     };
   }
 
@@ -752,7 +799,7 @@ export class BridgeEngine {
     const p = enginePaths(this.projectPath);
     const exists = await stat(p.configPath).then(() => true, () => false);
     const { config, errors } = await loadConfig(p.configPath, { readFile: (f) => readFile(f, 'utf8') });
-    return { config, errors, path: p.configPath, exists, permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY] };
+    return { config, errors, path: p.configPath, exists, permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, OPENCODE_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY] };
   }
 
   /** Validates with the same rules `doctor`/`start` use and writes `.ai-bridge/config.json`
@@ -890,6 +937,11 @@ export class BridgeEngine {
     await writeFile(p.humanLogPath, formatHumanLogLine(full) + '\n', { flag: 'a' });
   }
 
+  private createExecutorAdapter(provider: ExecutorProviderId, executable: string): ExecutorAdapter {
+    const options = { executable, commandArgsPrefix: this.deps.claudeCommandArgsPrefix };
+    return provider === 'opencode' ? new OpenCodeCliAdapter(options) : new ClaudeCodeCliAdapter(options);
+  }
+
   private async runLoop(o: {
     projectName: string;
     bridgeSessionId: string;
@@ -898,6 +950,7 @@ export class BridgeEngine {
     logsDir: string;
     initialPrompt: string;
     claudeExe: string;
+    executor: ExecutorProviderId;
     codexExe: string;
     config: AiBridgeConfig;
     correlation?: string;
@@ -934,6 +987,7 @@ export class BridgeEngine {
       maxIterations: o.config.maxIterations,
       ...(o.correlation !== undefined ? { correlation: o.correlation } : {}),
       ...(o.permissionPolicy !== undefined ? { permissionPolicy: o.permissionPolicy } : {}),
+      executor: o.executor,
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -947,10 +1001,12 @@ export class BridgeEngine {
       maxIterations: o.config.maxIterations,
       ...(o.correlation !== undefined ? { correlation: o.correlation } : {}),
       permissions: { claude: o.permissions.claude.resolved, codex: o.permissions.codex.resolved },
-      // docs/62: null = no --model flag (the Claude CLI's own setting decides).
-      models: { claude: o.config.models.claude },
+      // docs/62: null = no --model flag (the CLI's own setting decides). docs/64: the executor model is the one of the selected CLI.
+      models: { claude: o.config.models.claude, opencode: o.config.models.opencode },
+      executor: o.executor,
     });
 
+    const executorModel = o.config.models[EXECUTOR_PROVIDER_INFO[o.executor].configKey as 'claude' | 'opencode'];
     const orchestrator = new Orchestrator({
       projectName: o.projectName,
       projectPath: this.projectPath,
@@ -960,9 +1016,9 @@ export class BridgeEngine {
       initialPrompt: o.initialPrompt,
       maxIterations: o.config.maxIterations,
       claudeTimeoutMs: o.config.claudeTimeoutMs,
-      claudeModel: o.config.models.claude,
+      claudeModel: executorModel,
       codexTimeoutMs: o.config.codexTimeoutMs,
-      claudeAdapter: new ClaudeCodeCliAdapter({ executable: o.claudeExe, commandArgsPrefix: this.deps.claudeCommandArgsPrefix }),
+      claudeAdapter: this.createExecutorAdapter(o.executor, o.claudeExe),
       codexAdapter: new CodexCliAdapter({ executable: o.codexExe, commandArgsPrefix: this.deps.codexCommandArgsPrefix }),
       claudeEnv: this.deps.claudeEnv,
       codexEnv: this.deps.codexEnv,

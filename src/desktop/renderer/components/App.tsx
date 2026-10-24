@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
+import { EXECUTOR_PROVIDER_INFO } from '../../shared/executor-providers.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
+import { useExecutorProvider } from '../state/useExecutorProvider.ts';
 import { NavProvider, type NavTarget, type View } from '../state/Navigation.tsx';
 import { statusLabel } from '../lib/run-summary.ts';
 import { ArtifactsView } from './ArtifactsView.tsx';
@@ -22,6 +24,7 @@ const NAV: { id: View; label: string; hint: string }[] = [
 export function App() {
   const { api, snapshot, notice, dismissNotice, runAction } = useBridge();
   const [nav, setNav] = useState<{ view: View; target: NavTarget | null; seq: number }>({ view: 'run', target: null, seq: 0 });
+  const executor = useExecutorProvider();
   const status = snapshot?.status;
   const canSwitchProject = !(snapshot?.runAttached || status?.status === 'RUNNING' || snapshot?.pendingAction);
 
@@ -47,7 +50,9 @@ export function App() {
               {n.label}
             </button>
           ))}
-          <div className="sidebar-foot">Claude CLI ⇄ Codex CLI · $0</div>
+          <div className="sidebar-foot">
+            {EXECUTOR_PROVIDER_INFO[executor].cliLabel} CLI ⇄ Codex CLI{executor === 'claude-code' ? ' · $0' : ''}
+          </div>
         </nav>
 
         <div className="main">

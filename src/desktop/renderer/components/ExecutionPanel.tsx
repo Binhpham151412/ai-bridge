@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ArtifactText, ExecutionView } from '../../../core/session-history/session-history.ts';
+import { EXECUTOR_PROVIDER_INFO, isExecutorProviderId } from '../../shared/executor-providers.ts';
 import { formatElapsed, formatTime } from '../lib/format.ts';
 import { CliOutput } from './CliOutput.tsx';
 import { EmptyState, Pill } from './common.tsx';
@@ -59,7 +60,9 @@ export function ExecutionPanel({
   onViewInput?: () => void;
 }) {
   const [outputStream, setOutputStream] = useState<'stdout' | 'stderr' | null>(null);
-  const name = agent === 'claude' ? 'Claude' : 'Codex';
+  // The `claude` slot is the developer slot: the record says which CLI filled it (older records: Claude Code).
+  const provider = execution && isExecutorProviderId(execution.record.provider) ? EXECUTOR_PROVIDER_INFO[execution.record.provider] : EXECUTOR_PROVIDER_INFO['claude-code'];
+  const name = agent === 'claude' ? provider.cliLabel : 'Codex';
 
   if (!execution) {
     return (
@@ -84,7 +87,7 @@ export function ExecutionPanel({
   if (mismatch) sessionState = 'fail';
   const evidenceText = mismatch ? `CLI báo id KHÁC với id được yêu cầu resume (${record.cliSessionId.requested ?? 'UNKNOWN'}) — MISMATCH` : EVIDENCE[record.cliSessionId.evidence];
   const finishedState: Check = effectiveStatus === 'COMPLETED' ? 'ok' : running ? 'pending' : 'fail';
-  const idLabel = agent === 'claude' ? 'Claude CLI session' : 'Codex thread';
+  const idLabel = agent === 'claude' ? `${provider.cliLabel} CLI session` : 'Codex thread';
   const shownId = record.cliSessionId.reported ?? record.cliSessionId.requested;
   let duration = '—';
   if (record.process.durationMs !== null) duration = formatElapsed(record.process.durationMs);
@@ -207,7 +210,13 @@ export function ExecutionPanel({
       </div>
       {running && <p className="hint">CLI output được lưu khi process kết thúc.</p>}
       {outputStream && <CliOutput key={outputStream} runId={runId} iteration={iteration} agent={agent} initialStream={outputStream} />}
-      {agent === 'claude' && <p className="hint">AI Bridge sử dụng Claude Code CLI trực tiếp. Danh sách hội thoại của Claude Desktop không phải là nguồn trạng thái của AI Bridge.</p>}
+      {agent === 'claude' && (
+        <p className="hint">
+          {provider === EXECUTOR_PROVIDER_INFO['claude-code']
+            ? 'AI Bridge sử dụng Claude Code CLI trực tiếp. Danh sách hội thoại của Claude Desktop không phải là nguồn trạng thái của AI Bridge.'
+            : `AI Bridge sử dụng ${provider.displayName} CLI trực tiếp. Danh sách phiên trong giao diện riêng của ${provider.cliLabel} không phải là nguồn trạng thái của AI Bridge.`}
+        </p>
+      )}
     </div>
   );
 }

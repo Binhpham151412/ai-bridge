@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { JournalRound } from '../../../core/journal/journal.ts';
 import type { BridgeSnapshot } from '../../shared/ipc-contract.ts';
+import { EXECUTOR_PROVIDER_INFO } from '../../shared/executor-providers.ts';
 import { useBridge } from '../state/BridgeProvider.tsx';
+import { useExecutorProvider } from '../state/useExecutorProvider.ts';
 import { useNav } from '../state/Navigation.tsx';
 import { useJournalIndex } from '../state/useSessionData.ts';
 import { isTechnicalEvent } from '../lib/events-store.ts';
@@ -55,6 +57,7 @@ function RunHero({ onStart, endDetail }: { onStart: () => void; endDetail: strin
   const elapsed = useElapsed(snapshot);
   const headline = describeHeadline(snapshot, endDetail);
   const coreStatus = status?.status ?? 'NOT_STARTED';
+  const executor = EXECUTOR_PROVIDER_INFO[useExecutorProvider()];
 
   return (
     <section className="hero" data-testid="run-hero" aria-label="Current run">
@@ -84,7 +87,7 @@ function RunHero({ onStart, endDetail }: { onStart: () => void; endDetail: strin
         </p>
       )}
       <div className="agents">
-        <AgentTile agent="claude" name="Claude" role="Developer · Claude Code CLI" />
+        <AgentTile agent="claude" name={executor.cliLabel} role={`Developer · ${executor.displayName} CLI`} />
         <AgentTile agent="codex" name="ChatGPT / Codex" role="Reviewer · Codex CLI" />
       </div>
       <RunControls onStart={onStart} />

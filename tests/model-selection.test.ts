@@ -50,15 +50,15 @@ async function sessionDir(projectPath: string): Promise<string> {
 }
 
 const record = async (dir: string, name: string): Promise<ExecutionRecord> => JSON.parse(await readFile(path.join(dir, name), 'utf8'));
-const withModel = (claude: string | null): AiBridgeConfig => ({ ...DEFAULT_CONFIG, models: { claude } });
+const withModel = (claude: string | null): AiBridgeConfig => ({ ...DEFAULT_CONFIG, models: { claude, opencode: null } });
 
 test('config: default is null (no --model, the CLI decides); old config files stay valid', () => {
-  assert.deepEqual(DEFAULT_CONFIG.models, { claude: null });
+  assert.deepEqual(DEFAULT_CONFIG.models, { claude: null, opencode: null });
   const old = validateConfig({ maxIterations: 3 });
   assert.deepEqual(old.errors, []);
-  assert.deepEqual(old.config.models, { claude: null });
-  assert.deepEqual(validateConfig({ models: { claude: 'claude-opus-5-5' } }).config.models, { claude: 'claude-opus-5-5' });
-  assert.deepEqual(validateConfig({ models: { claude: null } }).config.models, { claude: null });
+  assert.deepEqual(old.config.models, { claude: null, opencode: null });
+  assert.deepEqual(validateConfig({ models: { claude: 'claude-opus-5-5' } }).config.models, { claude: 'claude-opus-5-5', opencode: null });
+  assert.deepEqual(validateConfig({ models: { claude: null } }).config.models, { claude: null, opencode: null });
 });
 
 test('config: model names are validated — never a flag, no spaces, bounded; codex is not configurable here', () => {
@@ -103,7 +103,7 @@ test('run: the configured model reaches every Claude call (also on --resume) and
       .filter(Boolean)
       .map((l) => JSON.parse(l) as { event: string; models?: unknown })
       .find((e) => e.event === 'RUN_STARTED');
-    assert.deepEqual(started?.models, { claude: 'claude-opus-5-5' });
+    assert.deepEqual(started?.models, { claude: 'claude-opus-5-5', opencode: null });
   }));
 
 test('run: with no model set, no --model is sent and the record shows what the CLI itself reported', () =>
@@ -117,11 +117,11 @@ test('run: with no model set, no --model is sent and the record shows what the C
 test('settings: getConfig/saveConfig round-trip the Claude model; invalid names are refused', () =>
   withProject(async (projectPath) => {
     const e = new BridgeEngine(projectPath);
-    assert.deepEqual((await e.getConfig()).config.models, { claude: null });
+    assert.deepEqual((await e.getConfig()).config.models, { claude: null, opencode: null });
     assert.equal((await e.saveConfig({ models: { claude: 'claude-sonnet-5' } })).kind, 'SAVED');
-    assert.deepEqual(JSON.parse(await readFile(path.join(projectPath, '.ai-bridge', 'config.json'), 'utf8')).models, { claude: 'claude-sonnet-5' });
-    assert.deepEqual((await e.getConfig()).config.models, { claude: 'claude-sonnet-5' });
+    assert.deepEqual(JSON.parse(await readFile(path.join(projectPath, '.ai-bridge', 'config.json'), 'utf8')).models, { claude: 'claude-sonnet-5', opencode: null });
+    assert.deepEqual((await e.getConfig()).config.models, { claude: 'claude-sonnet-5', opencode: null });
     assert.equal((await e.saveConfig({ models: { claude: '--evil' } })).kind, 'INVALID');
     await writeFile(path.join(projectPath, '.ai-bridge', 'config.json'), JSON.stringify({ models: { claude: null } }), 'utf8');
-    assert.deepEqual((await e.getConfig()).config.models, { claude: null });
+    assert.deepEqual((await e.getConfig()).config.models, { claude: null, opencode: null });
   }));

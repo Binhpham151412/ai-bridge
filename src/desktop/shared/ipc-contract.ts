@@ -1,3 +1,4 @@
+import type { ExecutorProviderId } from '../../core/executor/executor-adapter.ts';
 import type { BridgeConfigView, BridgeRecoveryCheck, BridgeStatus } from '../../core/bridge-engine.ts';
 import type { DoctorReport } from '../../core/preflight/doctor.ts';
 import type { BridgeEvent } from '../../core/observability/events.ts';
@@ -51,8 +52,24 @@ export const INVOKE_CHANNELS = [
   'project:setPinned',
   'project:removeRecent',
   'project:locate',
+  // docs/64: the AI CLIs the developer slot can use, as detected on this machine (no payload).
+  'providers:list',
 ] as const;
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];
+
+/** docs/64: one executor CLI as Main detected it — what the developer picker shows. */
+export interface ExecutorProviderView {
+  id: ExecutorProviderId;
+  displayName: string;
+  installed: boolean;
+  version: string | null;
+  /** READY = installed and a stored login/credential was found (no model was called). */
+  ready: boolean;
+  /** One plain sentence about what was found, including the login command when one is needed. */
+  message: string;
+  loginHint: string;
+  modelHint: string;
+}
 
 /** docs/63: one row of the recent-project list, as Main reports it (status checked in Main). */
 export interface ProjectHistoryItem {
@@ -281,6 +298,7 @@ export interface InvokeContract {
   'project:setPinned': { request: ProjectSetPinnedRequest; response: ActionResponse };
   'project:removeRecent': { request: ProjectHistoryIdRequest; response: ActionResponse };
   'project:locate': { request: ProjectHistoryIdRequest; response: ActionResponse };
+  'providers:list': { request: void; response: DataResponse<ExecutorProviderView[]> };
 }
 
 export type RequestOf<C extends InvokeChannel> = InvokeContract[C]['request'];
@@ -536,6 +554,7 @@ const VALIDATORS: { [C in InvokeChannel]: (payload: unknown) => Validation<Reque
   'project:setPinned': validateProjectSetPinned,
   'project:removeRecent': validateProjectHistoryId,
   'project:locate': validateProjectHistoryId,
+  'providers:list': noPayload,
 };
 
 export function validateRequest<C extends InvokeChannel>(channel: C, payload: unknown): Validation<RequestOf<C>> {
