@@ -6,8 +6,10 @@ export type BridgeMessage = {
   round: number
   /** Codex's verdict; absent on Claude's messages. */
   status?: 'CONTINUE' | 'DONE' | 'NEED_HUMAN'
-  /** The whole message as Markdown: Claude's final message, or Codex's review and what it said next. */
+  /** The whole message as Markdown (what Copy takes; the pane clips what it draws): Claude's final message, or Codex's review and what it said next. */
   text: string
+  /** Codex's PROMPT alone, copied on its own; absent on Claude's messages. */
+  prompt?: string
   /** One line drawn while the message is folded. */
   preview: string
 }
@@ -25,12 +27,24 @@ export type BridgeView = {
   messages: BridgeMessage[]
 }
 
+/** A task sent from the pane's field, until a loop newer than `afterLoop` shows up. */
+export type PendingTask = {
+  task: string
+  /** The loop the pane showed when the task was sent (0: none). */
+  afterLoop: number
+  /** When `/bridge` ran (ms, the engine clock); null while it waits in the queue. */
+  ranAt: number | null
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'ai-bridge-panel': {
       view: BridgeView | null
       /** `<loop>:<message id>` of each message the person unfolded. */
       expanded: string[]
+      pending: PendingTask | null
+      /** The engine clock at the last read while Codex reviews: the reviewing line counts up to it. */
+      now: number
     }
   }
 }

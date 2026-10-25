@@ -63,12 +63,20 @@ ends every final message with the `## TASK / ## CHANGES / ## TESTS / ## ISSUES /
 
 ## 5. The pane (`ai-bridge-panel`, optional)
 
-A separate plugin (a Claude Code hooks module, `plugins/claude-code-panel/`) that only reads the
-files above: status, task, round N / max, "Codex đang review…" while the Stop hook runs (only while the loop is `RUNNING`), the last
+A separate plugin (a Claude Code hooks module, `plugins/claude-code-panel/`) that reads the
+files above: status, task, round N / max, "Codex đang review vòng N… 45 giây" while the Stop hook runs (only while the loop is `RUNNING`), the last
 verdict and Codex's next prompt, and Codex's review of that round. It opens on `/bridge <task>`
 (not on `/bridge stop`), on a session start where the loop is still running, and on
-`/bridge-panel`; it re-reads every 2 s while the loop runs. Tests: `claude plugin test
+`/bridge-panel` (asking for the keyboard, so the task field takes the typing); it re-reads every 2 s while the loop runs. Tests: `claude plugin test
 plugins/claude-code-panel` (needs Claude Code ≥ 2.1.308, the version that wrote the mod API).
+
+Driving the loop from the pane (0.3.0):
+
+| Control | What it does |
+|---|---|
+| Task field (when no loop runs: none yet, DONE, NEED_HUMAN, ERROR, STOPPED) | Enter runs `/bridge <task>` through `$.command.run`, as if typed: the same `UserPromptSubmit` hook arms the loop. The command waits in the queue while Claude works; the pane shows "Đã gửi /bridge …" until a newer loop appears in `state.json`, or says so 30 s after the command ran without arming one. Not drawn on mobile (no text field there): the pane says to type `/bridge` in the chat |
+| Dừng vòng lặp (while `RUNNING`) | writes what `/bridge stop` writes (`status: STOPPED`, `reviewingSince: null`) to `state.json`, only if the file still holds the running loop the pane showed. It cannot run `/bridge stop` instead: a plugin's command waits for the session to be idle, which a running loop never is. Claude finishes its current turn; the Stop hook then sees `STOPPED` and ends the loop |
+| Copy (each message), Copy prompt (Codex CONTINUE), Copy tất cả | `$.ui.copy` of the whole message (the pane draws at most 20 000 characters of one), Codex's PROMPT alone, or the whole exchange as Markdown (`## Claude · vòng N` / `## Codex · vòng N · STATUS`); a toast says whether it reached the clipboard |
 
 ## 6. Layout
 
@@ -103,3 +111,8 @@ code, build again and update the plugin. The hooks take effect in sessions start
   Codex's prompt), then a resumed Codex thread answered DONE; `loop-1/` was kept.
 - **Not yet verified**: Claude Code acting on the `decision: block` in a live session (documented
   behaviour; first real run in the desktop app will tell), and the pane inside the desktop app.
+- Pane 0.3.0 (2026-10-25): task field, Stop and Copy covered by `claude plugin test` (24 tests,
+  Claude Code 2.1.308) and `claude plugin validate`. **Not yet verified live**: that a `/bridge`
+  run by the pane's `$.command.run` reaches the `UserPromptSubmit` settings hook (the mod API
+  documents it as running "as if the person typed" it; the pane reports it after 30 s if no loop
+  starts), and the clipboard write on the desktop surface.

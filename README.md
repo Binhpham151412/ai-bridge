@@ -253,7 +253,8 @@ See [docs/13-m4.2-development-journal.md](docs/13-m4.2-development-journal.md).
 The same Codex review loop, inside the Claude Code session you are working in: type
 `/bridge <task>`, and each time Claude finishes a turn Codex reviews it and sends the next
 instruction, until DONE or NEED_HUMAN (`/bridge stop` ends it early). The optional
-`ai-bridge-panel` plugin shows the loop in a pane beside the chat. See
+`ai-bridge-panel` plugin shows the loop in a pane beside the chat: `/bridge-panel` opens it,
+its task field starts a loop on Enter, and it can stop the loop and copy any message. See
 [docs/66-claude-code-plugin.md](docs/66-claude-code-plugin.md).
 
 ```bash

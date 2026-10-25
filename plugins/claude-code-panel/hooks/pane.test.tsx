@@ -45,20 +45,28 @@ const REVIEW_1 =
 const REPORT_2 = 'Added the expired-token test.\n\n## TESTS\n4 pass'
 
 /** The engine beneath the pane: the files the ai-bridge hooks wrote, by path. */
-function world(on: On, files: Record<string, string>) {
+function world(on: On, files: Record<string, string>, { now = 0, copies = true, bridge = true } = {}) {
   const opened: string[] = []
+  const focused: string[] = []
+  const ran: { command: string; args: string }[] = []
+  const copied: string[] = []
+  const toasts: string[] = []
   mock.env(on, { AI_BRIDGE_CLAUDE_CODE_DIR: ROOT })
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now })
   on('session.id', () => ({ value: SESSION }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'bridge-panel' } }))
-  on('ui.open', (_, e) => (opened.push(e.id), { value: { isPlaced: true } }))
+  on('ui.open', (_, e) => (opened.push(e.id), e.focus && focused.push(e.id), { value: { isPlaced: true } }))
+  if (bridge) on('command.run', { command: 'bridge' }, (_, e) => (ran.push({ command: e.command, args: e.args }), {}))
+  on('ui.copy', (_, e) => (copied.push(e.text), { value: copies ? { isCopied: true } : { isCopied: false, reason: 'no-clipboard' } }))
+  on('ui.toast', (_, e) => (toasts.push(e.text), { value: undefined }))
   // The engine hands the path on resolved, with the platform's separators.
   on('fs.read', (_, e) => {
     const text = files[e.path.replace(/\\/g, '/')]
     return text === undefined ? { deny: 'ENOENT' } : { value: text }
   })
-  return { clock, opened }
+  on('fs.write', (_, e) => ((files[e.path.replace(/\\/g, '/')] = e.text), { value: undefined }))
+  return { clock, opened, focused, ran, copied, toasts }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -194,4 +202,202 @@ test('an opened conversation draws on every surface', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /Claude · vòng 1/ })).toBeTruthy()
     await ui.unmount()
   }
+})
+
+// ── Driving the loop from the pane ──────────────────────────────────────────
+
+test('without a loop the pane offers a task field, focused, and Enter runs /bridge <task>', async ($, on) => {
+  const { ran } = world(on, {})
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  const field = await ui.find({ type: 'Input', key: 'task' })
+  expect(field?.props.autoFocus).toBe(true)
+  await ui.input({ key: 'task', text: '  fix the login bug\nand add a test  ' })
+  expect(ran).toEqual([{ command: 'bridge', args: 'fix the login bug\nand add a test' }])
+  await ui.unmount()
+})
+
+test('an empty task runs nothing', async ($, on) => {
+  const { ran } = world(on, {})
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'task', text: '   \n ' })
+  expect(ran).toEqual([])
+  expect(await ui.find({ type: 'Input', key: 'task' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('after Enter the pane says the task is on its way while it waits for Claude, then follows the loop it armed', async ($, on) => {
+  const files: Record<string, string> = {}
+  const { clock } = world(on, files, { bridge: false })
+  // Claude is busy: the command waits in the queue, then the UserPromptSubmit hook arms the loop.
+  on('command.run', { command: 'bridge' }, async () => {
+    await clock.sleep(5_000)
+    files[`${DIR}/state.json`] = state({ round: 0, lastVerdict: null })
+    return {}
+  })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.input({ key: 'task', text: 'fix the login bug' })
+  expect(await ui.find({ type: 'Text', text: /Đã gửi \/bridge fix the login bug/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Input', key: 'task' })).toBeFalsy()
+
+  await clock.advance(2_000)
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeTruthy()
+  await clock.advance(4_000)
+  expect(await ui.find({ type: 'Text', text: /Đang chạy/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a /bridge that armed no loop is reported after a while and the field comes back', async ($, on) => {
+  const { clock, toasts } = world(on, {})
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.input({ key: 'task', text: 'fix the login bug' })
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeTruthy()
+  await clock.advance(30_000)
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Input', key: 'task' })).toBeTruthy()
+  expect(toasts.at(-1)).toMatch(/chưa thấy vòng review nào bắt đầu/)
+  await ui.unmount()
+})
+
+test('a finished loop offers the field again, and Enter starts the next loop', async ($, on) => {
+  const { ran } = world(on, { [`${DIR}/state.json`]: state({ status: 'NEED_HUMAN' }), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1 })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'task', text: 'use the refresh token' })
+  expect(ran).toEqual([{ command: 'bridge', args: 'use the refresh token' }])
+  await ui.unmount()
+})
+
+test('a running loop has no task field but a Stop button that marks the loop STOPPED, as /bridge stop does', async ($, on) => {
+  const files: Record<string, string> = {
+    [`${DIR}/state.json`]: state({ reviewingSince: '2026-10-23T10:06:00.000Z' }),
+    [`${LOOP}/001-report.md`]: REPORT_1,
+    [`${LOOP}/001-codex-review.md`]: REVIEW_1,
+  }
+  world(on, files, { now: Date.parse('2026-10-23T10:07:00.000Z') })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Input', key: 'task' })).toBeFalsy()
+
+  await ui.press({ key: 'stop' })
+  const saved = JSON.parse(files[`${DIR}/state.json`] ?? '{}')
+  expect(saved).toMatchObject({ status: 'STOPPED', reviewingSince: null, task: 'fix the login bug', loop: 1, round: 1, codexThreadId: 't' })
+  expect(saved.updatedAt).toBe('2026-10-23T10:07:00.000Z')
+  expect(await ui.find({ type: 'Text', text: /Đã dừng/ })).toBeTruthy()
+  expect(await ui.find({ key: 'stop' })).toBeFalsy()
+  expect(await ui.find({ type: 'Input', key: 'task' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('Stop leaves alone a loop that ended or was re-armed since the pane last read it', async ($, on) => {
+  const files: Record<string, string> = { [`${DIR}/state.json`]: state() }
+  world(on, files)
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  const rearmed = state({ loop: 2, round: 0 })
+  files[`${DIR}/state.json`] = rearmed
+  await ui.press({ key: 'stop' })
+  expect(files[`${DIR}/state.json`]).toBe(rearmed)
+
+  // The press read the file again: the pane now shows loop 2, still running.
+  const done = state({ loop: 2, status: 'DONE' })
+  files[`${DIR}/state.json`] = done
+  await ui.press({ key: 'stop' })
+  expect(files[`${DIR}/state.json`]).toBe(done)
+  await ui.unmount()
+})
+
+test('the reviewing line counts how long Codex has been at it', async ($, on) => {
+  const { clock } = world(
+    on,
+    { [`${DIR}/state.json`]: state({ reviewingSince: '2026-10-23T10:06:00.000Z' }), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1, [`${LOOP}/002-report.md`]: REPORT_2 },
+    { now: Date.parse('2026-10-23T10:06:45.000Z') },
+  )
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Codex đang review vòng 2… 45 giây/ })).toBeTruthy()
+  await clock.advance(80_000)
+  expect(await ui.find({ type: 'Text', text: /Codex đang review vòng 2… 2 phút 05 giây/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+// ── Copying out of the pane ─────────────────────────────────────────────────
+
+test('each message copies whole, even past what the pane draws', async ($, on) => {
+  const long = `Fixed it.\n\n${'x'.repeat(30_000)}\nEND`
+  const { copied, toasts } = world(on, { [`${DIR}/state.json`]: state(), [`${LOOP}/001-report.md`]: long, [`${LOOP}/001-codex-review.md`]: REVIEW_1 })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.press({ key: 'copy-1-claude' })
+  expect(copied).toEqual([long])
+  expect(toasts.at(-1)).toMatch(/Đã copy/)
+
+  await ui.press({ key: 'toggle-1-claude' })
+  expect(String((await ui.find({ type: 'Markdown' }))?.props.text).length).toBeLessThan(long.length)
+  await ui.unmount()
+})
+
+test('Codex\'s message copies its review and prompt; the prompt also copies on its own', async ($, on) => {
+  const { copied } = world(on, { [`${DIR}/state.json`]: state(), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1 })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.press({ key: 'copy-1-codex' })
+  expect(copied[0]).toMatch(/## Problems Found[\s\S]*Add a test for the expired token\./)
+  expect(copied[0]).not.toMatch(/AI_BRIDGE_RESPONSE/)
+  await ui.press({ key: 'copy-prompt-1' })
+  expect(copied[1]).toBe('Add a test for the expired token.')
+  await ui.unmount()
+})
+
+test('"Copy tất cả" copies the whole exchange in order, each message under its label', async ($, on) => {
+  const { copied } = world(on, { [`${DIR}/state.json`]: state(), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1, [`${LOOP}/002-report.md`]: REPORT_2 })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.press({ key: 'copy-all' })
+  const all = copied[0] ?? ''
+  const at = (s: string) => all.indexOf(s)
+  expect(at('fix the login bug')).toBeGreaterThan(-1)
+  expect(at('Claude · vòng 1')).toBeGreaterThan(-1)
+  expect(at('Fixed the login check.')).toBeGreaterThan(at('Claude · vòng 1'))
+  expect(at('Codex · vòng 1 · CONTINUE')).toBeGreaterThan(at('Fixed the login check.'))
+  expect(at('Claude · vòng 2')).toBeGreaterThan(at('Codex · vòng 1 · CONTINUE'))
+  expect(at('Added the expired-token test.')).toBeGreaterThan(at('Claude · vòng 2'))
+  await ui.unmount()
+})
+
+test('a copy that reached no clipboard says so', async ($, on) => {
+  const { toasts } = world(on, { [`${DIR}/state.json`]: state(), [`${LOOP}/001-report.md`]: REPORT_1 }, { copies: false })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'copy-1-claude' })
+  expect(toasts.at(-1)).toMatch(/Không copy được/)
+  await ui.unmount()
+})
+
+// ── Opening ─────────────────────────────────────────────────────────────────
+
+test('/bridge-panel opens the pane asking for the keyboard, so the task field takes the typing', async ($, on) => {
+  const { focused } = world(on, {})
+  await start($)
+  await $.command.run({ command: 'bridge-panel', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+  expect(focused).toEqual(['ai-bridge'])
+})
+
+test('a surface with no text field says how to start a loop from the chat', async ($, on) => {
+  world(on, {})
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
+  expect(await ui.find({ type: 'Text', text: /\/bridge/ })).toBeTruthy()
+  await ui.unmount()
 })
