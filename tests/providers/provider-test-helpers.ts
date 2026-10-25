@@ -1,4 +1,5 @@
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { after } from 'node:test';
+import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,7 @@ const FIXTURES = fileURLToPath(new URL('../fixtures/fake-provider/', import.meta
 export const FAKE_CLAUDE_DIAG = path.join(FIXTURES, 'fake-claude-diag.mjs');
 export const FAKE_CODEX_DIAG = path.join(FIXTURES, 'fake-codex-diag.mjs');
 export const FAKE_OPENCODE_DIAG = path.join(FIXTURES, 'fake-opencode-diag.mjs');
+export const FAKE_AGY_DIAG = path.join(FIXTURES, 'fake-agy-diag.mjs');
 
 const SCRUBBED_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'FAKE_DIAG_VERSION', 'FAKE_DIAG_AUTH', 'FAKE_DIAG_PROBE', 'FAKE_DIAG_LOG'];
 
@@ -19,8 +21,16 @@ export function testEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return { ...env, ...extra };
 }
 
+const logDirs: string[] = [];
+after(() => {
+  for (const dir of logDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A fresh argv log path; its temp dir is removed once the test file has finished. */
 export function newLogPath(): string {
-  return path.join(mkdtempSync(path.join(tmpdir(), 'ai-bridge-provider-')), 'argv.jsonl');
+  const dir = mkdtempSync(path.join(tmpdir(), 'ai-bridge-provider-'));
+  logDirs.push(dir);
+  return path.join(dir, 'argv.jsonl');
 }
 
 /** argv of every fake-CLI invocation recorded via FAKE_DIAG_LOG. */
@@ -51,6 +61,6 @@ export function fakeContext(opts: FakeContextOptions = {}): ProviderDiagnosticCo
     probeTimeoutMs: opts.probeTimeoutMs ?? 10000,
     probeCwd: tmpdir(),
     now: () => new Date('2026-09-27T12:00:00.000Z'),
-    commandArgsPrefix: { 'claude-code': [FAKE_CLAUDE_DIAG], opencode: [FAKE_OPENCODE_DIAG], codex: [FAKE_CODEX_DIAG] },
+    commandArgsPrefix: { 'claude-code': [FAKE_CLAUDE_DIAG], opencode: [FAKE_OPENCODE_DIAG], antigravity: [FAKE_AGY_DIAG], codex: [FAKE_CODEX_DIAG] },
   };
 }

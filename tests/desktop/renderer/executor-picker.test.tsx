@@ -8,6 +8,7 @@ import { BridgeProvider } from '../../../src/desktop/renderer/state/BridgeProvid
 import { CLAUDE_PERMISSION_CAPABILITY } from '../../../src/adapters/claude/claude-code-cli-adapter.ts';
 import { CODEX_PERMISSION_CAPABILITY } from '../../../src/adapters/chatgpt/codex-cli-adapter.ts';
 import { OPENCODE_PERMISSION_CAPABILITY } from '../../../src/adapters/opencode/opencode-cli-adapter.ts';
+import { ANTIGRAVITY_PERMISSION_CAPABILITY } from '../../../src/adapters/antigravity/antigravity-cli-adapter.ts';
 import type { ExecutorProviderId } from '../../../src/core/executor/executor-adapter.ts';
 import type { ExecutorProviderView, SettingsView } from '../../../src/desktop/shared/ipc-contract.ts';
 import { FakeMain, click, flush, makeSnapshot, q, render } from './harness.tsx';
@@ -26,22 +27,25 @@ function settings(executor: ExecutorProviderId, opencodeModel: string | null = n
         reportMaxBytes: 1_048_576,
         stopOnUncommittedChanges: false,
         requireGitRepository: false,
-        permissions: { claude: 'bypass', codex: 'bypass', opencode: 'bypass' },
+        permissions: { claude: 'bypass', codex: 'bypass', opencode: 'bypass', antigravity: 'bypass' },
         models: { claude: null, opencode: opencodeModel },
         executor: { provider: executor },
       },
       errors: [],
       path: 'D:\\work\\demo\\.ai-bridge\\config.json',
       exists: true,
-      permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, OPENCODE_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY],
+      permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, OPENCODE_PERMISSION_CAPABILITY, ANTIGRAVITY_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY],
     },
     logs: { maxFileBytes: 2_000_000 },
   };
 }
 
+const AGY: ExecutorProviderView = { id: 'antigravity', displayName: 'Antigravity', installed: true, version: '1.3.4', ready: null, message: 'Antigravity is installed (1.3.4). The CLI has no sign-in status command.', loginHint: 'agy', modelHint: 'chosen inside Antigravity' };
+
 const DETECTED: ExecutorProviderView[] = [
   { id: 'claude-code', displayName: 'Claude Code', installed: true, version: '2.1.161', ready: true, message: 'Claude Code is installed and logged in.', loginHint: 'claude auth login --claudeai', modelHint: 'an alias or id' },
   { id: 'opencode', displayName: 'OpenCode', installed: true, version: '1.14.30', ready: false, message: 'OpenCode is installed but has no stored credentials.', loginHint: 'opencode auth login', modelHint: 'provider/model' },
+  AGY,
 ];
 
 async function open(view: SettingsView, detected: ExecutorProviderView[] | 'error' = DETECTED) {
@@ -81,6 +85,44 @@ test('Settings lists every executor CLI with what was detected; the project sett
     assert.doesNotMatch(q(container, 'executor-claude-code-message')!.textContent!, /Đăng nhập:/, 'a ready CLI does not');
   } finally {
     await unmount();
+  }
+});
+
+test('Antigravity: installed but sign-in unknown is its own state (not "not signed in"); choosing it replaces the model section with an explanation', async () => {
+  const { main, container, unmount } = await open(settings('claude-code'));
+  try {
+    assert.match(q(container, 'executor-antigravity-badge')!.textContent!, /Đã cài \(chưa rõ đăng nhập\)/);
+    assert.doesNotMatch(q(container, 'executor-antigravity-message')!.textContent!, /Đăng nhập:/, 'no sign-in instruction for a state we cannot judge');
+    await click(q(container, 'executor-antigravity-radio'));
+    assert.ok(q(container, 'models-antigravity-section'));
+    assert.match(q(container, 'models-antigravity-section')!.textContent!, /không có tuỳ chọn chọn model/);
+    assert.equal(q(container, 'model-claude-select'), null);
+    assert.equal(q(container, 'model-opencode'), null);
+    assert.ok(q(container, 'permission-antigravity'));
+    assert.match(q(container, 'permission-antigravity')!.textContent!, /--dangerously-skip-permissions/);
+    const submitBtn = [...container.querySelectorAll('button[type="submit"]')].find((b) => b.textContent === 'Lưu cấu hình');
+    await click(submitBtn);
+    assert.deepEqual(savedConfig(main).executor, { provider: 'antigravity' });
+  } finally {
+    await unmount();
+  }
+});
+
+test('the Start dialog for Antigravity shows no model (it picks its own) and its permission', async () => {
+  const view = settings('antigravity');
+  const main = new FakeMain(makeSnapshot());
+  main.handlers.set('bridge:getSettings', () => ({ ok: true, data: view }));
+  const r = await render(
+    <BridgeProvider api={main.api}>
+      <StartRunDialog onClose={() => {}} />
+    </BridgeProvider>,
+  );
+  try {
+    await flush();
+    assert.equal((q(r.container, 'start-developer') as HTMLInputElement).value, 'Antigravity CLI (executor)');
+    assert.match(q(r.container, 'start-permissions')!.textContent!, /Antigravity model: do Antigravity tự chọn · Permissions — Antigravity: bypass, Codex: bypass/);
+  } finally {
+    await r.unmount();
   }
 });
 
@@ -165,7 +207,7 @@ test('a project already set to OpenCode opens on it, with its saved model', asyn
 
 test('the bypass warning follows the selected executor and the reviewer, not a hidden provider', async () => {
   const view = settings('claude-code');
-  view.project!.config.permissions = { claude: 'ask', codex: 'ask', opencode: 'bypass' };
+  view.project!.config.permissions = { claude: 'ask', codex: 'ask', opencode: 'bypass', antigravity: 'bypass' };
   const { container, unmount } = await open(view);
   try {
     assert.equal(q(container, 'permission-bypass-warning'), null, 'OpenCode is on bypass but not in use');

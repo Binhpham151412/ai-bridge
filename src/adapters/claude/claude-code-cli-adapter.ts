@@ -117,6 +117,7 @@ interface StreamEvent {
 export class ClaudeCodeCliAdapter implements ExecutorAdapter {
   readonly provider = 'claude-code' as const;
   readonly sessionIdAssignment = 'caller' as const;
+  readonly promptChannel = 'stdin' as const;
   readonly permissionCapability = CLAUDE_PERMISSION_CAPABILITY;
   private readonly executable: string;
   private readonly commandArgsPrefix: string[];

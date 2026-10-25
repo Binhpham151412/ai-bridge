@@ -20,6 +20,11 @@ test('providers:list reports every executor, in the picker order, and never the 
   assert.match(opencode.message, /2 stored credentials/);
   assert.equal(opencode.loginHint, 'opencode auth login');
   assert.match(opencode.modelHint, /provider\/model/);
+  // Antigravity has no sign-in status command: installed, but "ready" is unknown (null), never a guess.
+  const agy = res.data[2];
+  assert.deepEqual([agy.id, agy.displayName, agy.installed, agy.ready, agy.version], ['antigravity', 'Antigravity', true, null, '1.3.4']);
+  assert.match(agy.message, /no sign-in status command/);
+  assert.match(agy.modelHint, /no model flag/);
 });
 
 test('a missing CLI is reported as not installed (and not ready), without hiding the other', async () => {
@@ -27,7 +32,7 @@ test('a missing CLI is reported as not installed (and not ready), without hiding
   const onlyClaude = { ...ctx, locateExecutable: async (name: string) => (name === 'opencode' ? null : process.execPath) };
   const res = await new ExecutorProviderService(createDefaultProviderRegistry(onlyClaude)).list();
   assert.ok(res.ok);
-  assert.deepEqual(res.data.map((p) => [p.id, p.installed, p.ready]), [['claude-code', true, true], ['opencode', false, false]]);
+  assert.deepEqual(res.data.map((p) => [p.id, p.installed, p.ready]), [['claude-code', true, true], ['opencode', false, false], ['antigravity', true, null]]);
   assert.match(res.data[1].message, /not found on PATH/);
 });
 

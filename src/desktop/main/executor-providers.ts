@@ -11,7 +11,8 @@ export function toExecutorProviderView(status: ProviderStatus, info: (typeof EXE
     displayName: info.displayName,
     installed: status.installation === 'INSTALLED',
     version: status.version,
-    ready: status.readiness === 'READY',
+    // UNKNOWN sign-in on an installed CLI (Antigravity has no status command) is "can't tell", not "not signed in".
+    ready: status.readiness === 'READY' ? true : status.installation === 'INSTALLED' && status.authentication.status === 'UNKNOWN' && status.readiness === 'UNKNOWN' && status.errors.length === 0 ? null : false,
     message: status.diagnosticMessage,
     loginHint: info.loginHint,
     modelHint: info.modelHint,

@@ -42,6 +42,7 @@ const CUSTOM_MODEL = '__custom__';
 function executorBadge(view: ExecutorProviderView | undefined, detecting: boolean): { label: string; tone: 'success' | 'warning' | 'muted' } {
   if (!view) return detecting ? { label: 'Đang dò…', tone: 'muted' } : { label: 'Chưa dò được', tone: 'muted' };
   if (!view.installed) return { label: 'Chưa cài', tone: 'warning' };
+  if (view.ready === null) return { label: 'Đã cài (chưa rõ đăng nhập)', tone: 'muted' };
   return view.ready ? { label: 'Sẵn sàng', tone: 'success' } : { label: 'Đã cài, chưa đăng nhập', tone: 'warning' };
 }
 
@@ -224,7 +225,7 @@ export function Settings() {
                           <br />
                           <small className="hint" data-testid={`executor-${id}-message`}>
                             {view ? view.message : providers === null ? 'Đang kiểm tra…' : 'Không kiểm tra được AI này — bấm "Dò lại". Bạn vẫn có thể chọn; System Check sẽ báo lại trước khi chạy.'}
-                            {view && !view.ready ? ` Đăng nhập: ${info.loginHint}` : ''}
+                            {view && view.installed && view.ready === false ? ` Đăng nhập: ${info.loginHint}` : ''}
                             {view?.version ? ` · phiên bản ${view.version}` : ''}
                           </small>
                         </span>
@@ -252,6 +253,14 @@ export function Settings() {
                     Viết theo dạng <code>provider/model</code>; chạy <code>opencode models</code> để xem danh sách. Để trống thì AI Bridge không truyền <code>--model</code> và OpenCode tự chọn. OpenCode không báo model nó đã dùng nên execution chỉ ghi model đã yêu cầu.
                   </small>
                 </label>
+              </section>
+            )}
+            {executor === 'antigravity' && (
+              <section className="models" data-testid="models-antigravity-section">
+                <h3 className="form-section">Antigravity model</h3>
+                <p className="hint">
+                  Antigravity CLI không có tuỳ chọn chọn model — nó dùng model đang chọn trong chính Antigravity, và AI Bridge không truyền model nào. Nó cũng không báo model lên stdout nên execution ghi model từ log của CLI khi có. Antigravity có thể tạo thư mục rỗng <code>.antigravitycli</code> trong project (thấy khi chạy ở thư mục chưa phải git repo).
+                </p>
               </section>
             )}
             {executor === 'claude-code' && claudeModel !== null && (

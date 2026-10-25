@@ -10,6 +10,7 @@ import { runProcess, killProcessTree } from '../automation/process-runner.ts';
 import { SessionManager } from './session-manager/session-manager.ts';
 import { CLAUDE_PERMISSION_CAPABILITY, ClaudeCodeCliAdapter } from '../adapters/claude/claude-code-cli-adapter.ts';
 import { OPENCODE_PERMISSION_CAPABILITY, OpenCodeCliAdapter } from '../adapters/opencode/opencode-cli-adapter.ts';
+import { ANTIGRAVITY_PERMISSION_CAPABILITY, AntigravityCliAdapter } from '../adapters/antigravity/antigravity-cli-adapter.ts';
 import { DEFAULT_EXECUTOR_PROVIDER, EXECUTOR_PROVIDER_INFO, type ExecutorAdapter, type ExecutorProviderId } from './executor/executor-adapter.ts';
 import { createRealExecutableLocator } from './providers/executable-discovery.ts';
 import { CODEX_PERMISSION_CAPABILITY, CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
@@ -134,6 +135,12 @@ async function realOpenCodeAuthCheck(opencodeExe: string): Promise<DoctorCheckOu
   return { status: 'PASS', detail: `${m[1]} stored credential(s) (not verified by a model call)` };
 }
 
+/** agy has no sign-in status command and a check must not call a model, so this only says so. A WARNING
+ * (never a failure): the first run is what tells. */
+async function realAntigravityAuthCheck(): Promise<DoctorCheckOutcome> {
+  return { status: 'WARNING', detail: 'sign-in cannot be checked (agy has no status command and a check must not call a model); the first run will tell' };
+}
+
 async function realCodexAuthCheck(codexExe: string): Promise<DoctorCheckOutcome> {
   const r = await runProcess({ command: codexExe, args: ['login', 'status'], timeoutMs: 15000 });
   const auth = parseCodexLoginStatus(r.stdout || r.stderr);
@@ -141,6 +148,21 @@ async function realCodexAuthCheck(codexExe: string): Promise<DoctorCheckOutcome>
   if (auth.authMode === 'api-key') return { status: 'BLOCKED', detail: 'logged in via API key — this would bill an API key. Run: codex login' };
   if (auth.authMode === 'none') return { status: 'FAIL', detail: 'not logged in. Run: codex login' };
   return { status: 'UNKNOWN', detail: `unrecognized "codex login status" output: ${(r.stdout || r.stderr).slice(0, 200)}` };
+}
+
+/** The two doctor checks of the selected executor: its executable, and what can be known about its sign-in. */
+function executorDoctorChecks(executor: ExecutorProviderId, exe: string | null): DoctorCheckDefinition[] {
+  const info = EXECUTOR_PROVIDER_INFO[executor];
+  const [cliName, authName] = info.doctorChecks;
+  const authCheck: Record<ExecutorProviderId, (exe: string) => Promise<DoctorCheckOutcome>> = {
+    'claude-code': realClaudeAuthCheck,
+    opencode: realOpenCodeAuthCheck,
+    antigravity: realAntigravityAuthCheck,
+  };
+  return [
+    { name: cliName, run: async () => (exe ? { status: 'PASS', detail: exe } : { status: 'FAIL', detail: `${info.executableName} not found on PATH` }) },
+    { name: authName, run: async () => (exe ? authCheck[executor](exe) : { status: 'UNKNOWN', detail: `skipped: ${info.executableName} not found` }) },
+  ];
 }
 
 interface DoctorOptions {
@@ -171,15 +193,7 @@ async function realRunDoctor(projectPath: string, options: DoctorOptions = {}): 
         return c.blocked ? { status: 'BLOCKED', detail: `cost-risk env vars set: ${c.foundKeys.join(', ')}` } : { status: 'PASS', detail: 'no cost-risk env vars set' };
       },
     },
-    ...((executor === 'claude-code'
-      ? [
-          { name: 'claude-cli', run: async () => (claudeExe ? { status: 'PASS', detail: claudeExe } : { status: 'FAIL', detail: 'claude not found on PATH' }) },
-          { name: 'claude-auth', run: async () => (claudeExe ? realClaudeAuthCheck(claudeExe) : { status: 'UNKNOWN', detail: 'skipped: claude not found' }) },
-        ]
-      : [
-          { name: 'opencode-cli', run: async () => (claudeExe ? { status: 'PASS', detail: claudeExe } : { status: 'FAIL', detail: 'opencode not found on PATH' }) },
-          { name: 'opencode-auth', run: async () => (claudeExe ? realOpenCodeAuthCheck(claudeExe) : { status: 'UNKNOWN', detail: 'skipped: opencode not found' }) },
-        ]) as DoctorCheckDefinition[]),
+    ...executorDoctorChecks(executor, claudeExe),
     {
       name: 'codex-cli',
       run: async () => (codexExe ? { status: 'PASS', detail: codexExe } : { status: 'FAIL', detail: 'codex not found on PATH or under %LOCALAPPDATA%\\OpenAI\\Codex\\bin' }),
@@ -799,7 +813,7 @@ export class BridgeEngine {
     const p = enginePaths(this.projectPath);
     const exists = await stat(p.configPath).then(() => true, () => false);
     const { config, errors } = await loadConfig(p.configPath, { readFile: (f) => readFile(f, 'utf8') });
-    return { config, errors, path: p.configPath, exists, permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, OPENCODE_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY] };
+    return { config, errors, path: p.configPath, exists, permissionCapabilities: [CLAUDE_PERMISSION_CAPABILITY, OPENCODE_PERMISSION_CAPABILITY, ANTIGRAVITY_PERMISSION_CAPABILITY, CODEX_PERMISSION_CAPABILITY] };
   }
 
   /** Validates with the same rules `doctor`/`start` use and writes `.ai-bridge/config.json`
@@ -939,7 +953,9 @@ export class BridgeEngine {
 
   private createExecutorAdapter(provider: ExecutorProviderId, executable: string): ExecutorAdapter {
     const options = { executable, commandArgsPrefix: this.deps.claudeCommandArgsPrefix };
-    return provider === 'opencode' ? new OpenCodeCliAdapter(options) : new ClaudeCodeCliAdapter(options);
+    if (provider === 'opencode') return new OpenCodeCliAdapter(options);
+    if (provider === 'antigravity') return new AntigravityCliAdapter(options);
+    return new ClaudeCodeCliAdapter(options);
   }
 
   private async runLoop(o: {
@@ -1006,7 +1022,9 @@ export class BridgeEngine {
       executor: o.executor,
     });
 
-    const executorModel = o.config.models[EXECUTOR_PROVIDER_INFO[o.executor].configKey as 'claude' | 'opencode'];
+    const executorInfo = EXECUTOR_PROVIDER_INFO[o.executor];
+    // A CLI without a model flag (Antigravity) never gets one, whatever the config says.
+    const executorModel = executorInfo.supportsModel ? o.config.models[executorInfo.configKey as 'claude' | 'opencode'] : null;
     const orchestrator = new Orchestrator({
       projectName: o.projectName,
       projectPath: this.projectPath,

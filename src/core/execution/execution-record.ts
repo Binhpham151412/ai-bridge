@@ -16,7 +16,8 @@ import type { StaleReportMove } from '../../reports/stale-report.ts';
  *   its own output; an id AI Bridge merely requested stays REQUESTED_NOT_CONFIRMED; with
  *   neither, UNKNOWN — an id is never invented.
  * - `input.delivery`: STDIN_FLUSHED_AND_CLOSED means every prompt byte was accepted by
- *   the OS pipe and stdin was closed. It does NOT prove the CLI read or processed it.
+ *   the OS pipe and stdin was closed. ARGV_AT_SPAWN means the prompt was part of the command
+ *   line of a process that did start. Neither proves the CLI read or processed it.
  * - `continuity` (resume only): VERIFIED only when the CLI reported the exact session id
  *   that was asked to be resumed.
  */
@@ -25,7 +26,7 @@ export type ExecutionAgent = 'claude' | 'codex';
 export type ExecutionStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TIMEOUT';
 export type SessionIdEvidence = 'CONFIRMED_BY_CLI' | 'REQUESTED_NOT_CONFIRMED' | 'UNKNOWN';
 export type ContinuityVerdict = 'VERIFIED' | 'MISMATCH' | 'UNKNOWN' | 'NOT_APPLICABLE';
-export type InputDelivery = 'PENDING' | 'STDIN_FLUSHED_AND_CLOSED' | 'STDIN_ERROR' | 'NOT_CONFIRMED';
+export type InputDelivery = 'PENDING' | 'STDIN_FLUSHED_AND_CLOSED' | 'STDIN_ERROR' | 'NOT_CONFIRMED' | 'ARGV_AT_SPAWN';
 
 /**
  * Token usage exactly as the CLI reported it for this call (M4.2) — never estimated from
@@ -247,6 +248,8 @@ export interface ProcessOutcome {
   reportedSessionId: string | null;
   inputDelivered: boolean;
   inputDeliveryError: string | null;
+  /** 'argv' = the prompt was a command-line argument, not stdin (absent = stdin). */
+  inputChannel?: 'stdin' | 'argv';
   executable: string;
   args: readonly string[];
 }
@@ -276,8 +279,17 @@ export function finalizeExecutionRecord(record: ExecutionRecord, o: ProcessOutco
     continuity,
     input: {
       ...record.input,
-      delivery: o.inputDelivered ? 'STDIN_FLUSHED_AND_CLOSED' : o.inputDeliveryError ? 'STDIN_ERROR' : 'NOT_CONFIRMED',
-      deliveredAt: o.inputDelivered ? (record.input.deliveredAt ?? o.startedAt) : null,
+      delivery:
+        o.inputChannel === 'argv'
+          ? o.pid !== null
+            ? 'ARGV_AT_SPAWN'
+            : 'NOT_CONFIRMED'
+          : o.inputDelivered
+            ? 'STDIN_FLUSHED_AND_CLOSED'
+            : o.inputDeliveryError
+              ? 'STDIN_ERROR'
+              : 'NOT_CONFIRMED',
+      deliveredAt: o.inputChannel === 'argv' ? (o.pid !== null ? (record.input.deliveredAt ?? o.startedAt) : null) : o.inputDelivered ? (record.input.deliveredAt ?? o.startedAt) : null,
       deliveryError: o.inputDeliveryError ? redactSecrets(o.inputDeliveryError) : null,
     },
     process: {

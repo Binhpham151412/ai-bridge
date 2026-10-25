@@ -11,7 +11,7 @@ test('the defaults match the values given in the spec', () => {
     stopOnUncommittedChanges: false,
     requireGitRepository: false,
     // M5.10.1: product default is bypass for every provider (docs/61).
-    permissions: { claude: 'bypass', codex: 'bypass', opencode: 'bypass' },
+    permissions: { claude: 'bypass', codex: 'bypass', opencode: 'bypass', antigravity: 'bypass' },
     // docs/62: no --model by default — the Claude CLI's own setting decides.
     models: { claude: null, opencode: null },
     // docs/64: Claude Code unless a project picks another executor.
@@ -27,7 +27,7 @@ test('accepts a fully specified valid config', () => {
     reportMaxBytes: 2048,
     stopOnUncommittedChanges: true,
     requireGitRepository: true,
-    permissions: { claude: 'ask', codex: 'bypass', opencode: 'bypass' },
+    permissions: { claude: 'ask', codex: 'bypass', opencode: 'bypass', antigravity: 'bypass' },
     models: { claude: 'claude-opus-5-5', opencode: null },
     executor: { provider: 'claude-code' },
   };

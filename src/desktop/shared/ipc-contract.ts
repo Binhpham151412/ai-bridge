@@ -63,8 +63,9 @@ export interface ExecutorProviderView {
   displayName: string;
   installed: boolean;
   version: string | null;
-  /** READY = installed and a stored login/credential was found (no model was called). */
-  ready: boolean;
+  /** true = installed and a stored login/credential was found (no model was called); false = installed
+   * but not signed in / not usable; null = installed, but the CLI offers no way to check without a model call. */
+  ready: boolean | null;
   /** One plain sentence about what was found, including the login command when one is needed. */
   message: string;
   loginHint: string;

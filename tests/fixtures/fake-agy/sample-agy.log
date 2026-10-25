@@ -1,0 +1,6 @@
+W1013 21:41:15.955527 23324 log_context.go:117] Cache(loadCodeAssistResponse): Singleflight refresh failed: error getting token source: You are not logged into Antigravity.
+E1013 21:41:15.967522 23324 log.go:398] Failed to poll ListExperiments: error getting token source: You are not logged into Antigravity.
+I1013 21:41:16.010174 23324 printmode.go:71] Print mode: starting (promptLength=22, model="", conversationID="")
+I1013 21:41:17.743273 23324 model_config_manager.go:157] Propagating selected model override to backend: label="Claude Sonnet 4.6 (Thinking)"
+I1013 21:41:18.538905 23324 server.go:755] Created conversation 317b65d8-cb2d-4d98-8496-8726e4ddc9f4
+I1013 21:41:19.775152 23324 model_config_manager.go:157] Propagating selected model override to backend: label="Claude Sonnet 4.6 (Thinking)"
