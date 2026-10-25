@@ -203,7 +203,7 @@ export const register: Register = on => {
             </Box>
           )
         })}
-        {v.reviewingSince !== null && (
+        {v.status === 'RUNNING' && v.reviewingSince !== null && (
           <Box borderStyle="round" borderColor="suggestion" borderDimColor paddingX={1} marginLeft={4}>
             <Text color="suggestion">Codex đang review vòng {v.round + 1}…</Text>
           </Box>

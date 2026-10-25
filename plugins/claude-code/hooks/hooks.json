@@ -5,7 +5,7 @@
       { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" prompt", "timeout": 10 }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" stop", "timeout": 900 }] }
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" stop", "timeout": 900, "statusMessage": "AI Bridge: Codex đang review…" }] }
     ]
   }
 }

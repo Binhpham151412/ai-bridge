@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CodexCliAdapter } from '../../src/adapters/chatgpt/codex-cli-adapter.ts';
@@ -62,6 +62,23 @@ test('CONTINUE blocks the stop and hands Codex\'s prompt to Claude', () =>
     assert.equal(state?.codexThreadId, '11111111-1111-1111-1111-111111111111');
   }));
 
+test('CONTINUE also tells the user in the chat which round Codex reviewed, with the side pane\'s label', () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    const out = await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }));
+    assert.match(out?.systemMessage ?? '', /^AI Bridge · Codex · vòng 1 · CONTINUE/);
+  }));
+
+test('CONTINUE asks Claude to first acknowledge Codex\'s review in the chat, then do the next instruction', () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    const out = await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }));
+    const reason = out?.reason ?? '';
+    assert.match(reason, /Begin your reply with one short line, in the user's language/);
+    assert.match(reason, /round 1 review/);
+    assert.ok(reason.indexOf('Round 2 instruction.') < reason.indexOf('Begin your reply'), 'the instruction comes first');
+  }));
+
 test('the reviewer gets Claude\'s final message, and every round is kept on disk', () =>
   withStateRoot(async (root) => {
     await arm(root);
@@ -88,6 +105,47 @@ test('while Codex reviews, the state says since when (for the side pane); afterw
     await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { locateCodex }));
     assert.equal(during, '2026-10-23T10:00:00.000Z');
     assert.equal((await loadLoopState(root, SESSION))?.reviewingSince, null);
+  }));
+
+/** A Stop hook killed mid-review (the user interrupted it): its mark and round-1 files stay behind. */
+async function leaveInterruptedReview(root: string): Promise<void> {
+  const file = path.join(root, SESSION, 'state.json');
+  const state = JSON.parse(await readFile(file, 'utf8'));
+  await writeFile(file, JSON.stringify({ ...state, reviewingSince: '2026-10-23T09:00:00.000Z' }));
+  const dir = path.join(root, SESSION, 'loop-1');
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, '001-report.md'), 'Interrupted reply.');
+  await writeFile(path.join(dir, '001-codex-input.md'), 'Interrupted input.');
+}
+
+test('a review after an interrupted one marks its own start and clears the mark when done', () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    await leaveInterruptedReview(root);
+    const real = new CodexCliAdapter({ executable: process.execPath, commandArgsPrefix: [FAKE_CODEX] });
+    let during: string | null | undefined;
+    const locateCodex = async () => ({
+      run: async (o: Parameters<CodexCliAdapter['run']>[0]) => {
+        during = (await loadLoopState(root, SESSION))?.reviewingSince;
+        return real.run(o);
+      },
+    });
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { locateCodex }));
+    assert.equal(during, '2026-10-23T10:00:00.000Z');
+    assert.equal((await loadLoopState(root, SESSION))?.reviewingSince, null);
+  }));
+
+test('an interrupted review neither uses up a round number nor gets its files overwritten', () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    await leaveInterruptedReview(root);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }));
+    const dir = path.join(root, SESSION, 'loop-1');
+    assert.equal(await readFile(path.join(dir, '001-report.md'), 'utf8'), REPLY);
+    assert.equal((await loadLoopState(root, SESSION))?.round, 1);
+    const aside = path.join(dir, 'interrupted');
+    assert.deepEqual((await readdir(aside)).sort(), ['001-2026-10-23T09-00-00.000Z-codex-input.md', '001-2026-10-23T09-00-00.000Z-report.md']);
+    assert.equal(await readFile(path.join(aside, '001-2026-10-23T09-00-00.000Z-report.md'), 'utf8'), 'Interrupted reply.');
   }));
 
 test('/bridge stop typed while Codex reviews wins: no block, the loop stays STOPPED', () =>
@@ -130,7 +188,7 @@ test('the next round resumes the same Codex thread, and DONE ends the loop witho
     assert.equal((await handleStop(stopInput(root), d))?.decision, 'block');
     const out = await handleStop(stopInput(root, { stop_hook_active: true }), d);
     assert.equal(out?.decision, undefined);
-    assert.match(out?.systemMessage ?? '', /DONE/);
+    assert.match(out?.systemMessage ?? '', /^AI Bridge · Codex · vòng 2 · DONE/);
     const state = await loadLoopState(root, SESSION);
     assert.equal(state?.status, 'DONE');
     assert.equal(state?.round, 2);
@@ -150,6 +208,7 @@ test('NEED_HUMAN ends the loop and shows the user what Codex needs', () =>
     const response = '<AI_BRIDGE_RESPONSE>\n<STATUS>NEED_HUMAN</STATUS>\n<PROMPT>\nPick the database: Postgres or SQLite?\n</PROMPT>\n</AI_BRIDGE_RESPONSE>\n';
     const out = await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'ok', FAKE_CODEX_RESPONSE: response }));
     assert.equal(out?.decision, undefined);
+    assert.match(out?.systemMessage ?? '', /^AI Bridge · Codex · vòng 1 · NEED_HUMAN/);
     assert.match(out?.systemMessage ?? '', /Pick the database: Postgres or SQLite\?/);
     assert.equal((await loadLoopState(root, SESSION))?.status, 'NEED_HUMAN');
   }));
@@ -162,6 +221,7 @@ test('CONTINUE on the last allowed round ends the loop as NEED_HUMAN and shows t
     await writeFile(file, JSON.stringify({ ...state, round: state.maxRounds - 1 }));
     const out = await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: 'never' }));
     assert.equal(out?.decision, undefined);
+    assert.match(out?.systemMessage ?? '', new RegExp(`^AI Bridge · Codex · vòng ${state.maxRounds} · CONTINUE`));
     assert.match(out?.systemMessage ?? '', new RegExp(`Round ${state.maxRounds + 1} instruction\\.`));
     const after = await loadLoopState(root, SESSION);
     assert.equal(after?.status, 'NEED_HUMAN');

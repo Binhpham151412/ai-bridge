@@ -64,3 +64,10 @@ test('unreadable hook input never blocks: exit 0 with a message for the user', (
     assert.equal(out.decision, undefined);
     assert.match(out.systemMessage, /AI Bridge/);
   }));
+
+test('while the Stop hook waits for Codex, Claude Code shows a spinner line saying so', async () => {
+  const hooks = JSON.parse(await readFile(fileURLToPath(new URL('../../plugins/claude-code/hooks/hooks.json', import.meta.url)), 'utf8'));
+  const stop = hooks.hooks.Stop[0].hooks[0];
+  assert.match(stop.command, / stop$/);
+  assert.match(stop.statusMessage ?? '', /Codex đang review/);
+});

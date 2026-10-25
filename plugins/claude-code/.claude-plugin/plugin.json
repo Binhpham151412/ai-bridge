@@ -1,6 +1,6 @@
 {
   "name": "ai-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI Bridge review loop inside Claude Code: /bridge <task> starts it; after each turn Codex reviews Claude's work and sends the next instruction, until DONE or NEED_HUMAN.",
   "author": { "name": "BinhPV9" }
 }

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
 import { checkEnvForApiKeys } from '../core/cost-guard.ts';
@@ -106,7 +106,7 @@ export async function handlePrompt(input: PromptInput, deps: PromptDeps): Promis
   if (arg === '') return { decision: 'block', reason: 'AI Bridge: give the task, e.g. `/bridge fix the login bug`, or `/bridge stop` to end the loop.' };
   if (arg === 'stop') {
     if (prev?.status !== 'RUNNING') return { decision: 'block', reason: 'AI Bridge: no review loop is running in this session.' };
-    await saveLoopState(deps.stateRoot, { ...prev, status: 'STOPPED', updatedAt: at });
+    await saveLoopState(deps.stateRoot, { ...prev, status: 'STOPPED', reviewingSince: null, updatedAt: at });
     return { decision: 'block', reason: `AI Bridge: review loop stopped after ${prev.round} round(s).` };
   }
 
@@ -162,6 +162,7 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
   const nnn = String(round).padStart(3, '0');
   const dir = loopDir(deps.stateRoot, state);
   await mkdir(dir, { recursive: true });
+  await setAsideInterrupted(dir, nnn, state.reviewingSince ?? deps.now().toISOString());
   await writeFile(path.join(dir, `${nnn}-report.md`), reply, 'utf8');
   const reviewerInput = buildReviewerInput({ projectName: path.basename(state.projectPath), sessionId: state.sessionId, iteration: round, reportText: reply });
   await writeFile(path.join(dir, `${nnn}-codex-input.md`), reviewerInput, 'utf8');
@@ -186,15 +187,48 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
   }
 
   const patch: Partial<LoopState> = { round, codexThreadId: result.threadId, lastVerdict: { round, status: parsed.status, prompt: parsed.prompt }, error: null };
-  if (parsed.status === 'DONE') return end('DONE', `AI Bridge: Codex marked the task DONE after ${round} review round(s).`, patch);
-  if (parsed.status === 'NEED_HUMAN') return end('NEED_HUMAN', `AI Bridge: Codex needs you (round ${round}):\n${parsed.prompt}`, patch);
+  const verdict = parsed.status;
+  const line = (rest: string) => roundLine(round, verdict, rest);
+  if (parsed.status === 'DONE') return end('DONE', line(`xong sau ${round} vòng review, vòng lặp kết thúc.`), patch);
+  if (parsed.status === 'NEED_HUMAN') return end('NEED_HUMAN', line(`Codex cần bạn quyết định:\n${parsed.prompt}`), patch);
   if (round >= state.maxRounds) {
-    return end('NEED_HUMAN', `AI Bridge: reached the ${state.maxRounds}-round limit. Codex's next prompt would have been:\n${parsed.prompt}`, patch);
+    return end('NEED_HUMAN', line(`đã tới giới hạn ${state.maxRounds} vòng nên vòng lặp dừng. Chỉ dẫn Codex định gửi tiếp:\n${parsed.prompt}`), patch);
   }
 
   await saveLoopState(deps.stateRoot, { ...state, ...patch, reviewingSince: null, updatedAt: deps.now().toISOString() });
   return {
     decision: 'block',
-    reason: [`AI Bridge — Codex review, round ${round}: CONTINUE. Next instruction:`, '', parsed.prompt, '', buildChatReportContract()].join('\n'),
+    reason: [`AI Bridge — Codex review, round ${round}: CONTINUE. Next instruction:`, '', parsed.prompt, '', acknowledgeReview(round), '', buildChatReportContract()].join('\n'),
+    systemMessage: line('Claude làm tiếp theo chỉ dẫn của Codex.'),
   };
+}
+
+const ROUND_FILES = ['report.md', 'codex-input.md', 'codex-review.md'];
+
+/**
+ * A Stop hook killed mid-review (the user interrupted it) leaves this round's files behind
+ * without counting the round. They move to `interrupted/<NNN>-<when it began>-…`, so the retry
+ * keeps the same number and overwrites nothing.
+ */
+async function setAsideInterrupted(dir: string, nnn: string, since: string): Promise<void> {
+  const stamp = since.replace(/:/g, '-');
+  for (const name of ROUND_FILES) {
+    const from = path.join(dir, `${nnn}-${name}`);
+    if (!(await stat(from).then(() => true, () => false))) continue;
+    await mkdir(path.join(dir, 'interrupted'), { recursive: true });
+    await rename(from, path.join(dir, 'interrupted', `${nnn}-${stamp}-${name}`));
+  }
+}
+
+/** The user-visible line for a reviewed round, labelled like the side pane: `Codex · vòng N · STATUS`. */
+function roundLine(round: number, status: BridgeStatus, rest: string): string {
+  return `AI Bridge · Codex · vòng ${round} · ${status} — ${rest}`;
+}
+
+/** Makes Claude say in the chat that the review arrived, so the chat matches the side pane. */
+function acknowledgeReview(round: number): string {
+  return (
+    `Begin your reply with one short line, in the user's language, telling the user you received Codex's round ${round} review ` +
+    `and what you will do next (for example: "Đã nhận review vòng ${round} của Codex (CONTINUE) — tiếp theo tôi sẽ …").`
+  );
 }

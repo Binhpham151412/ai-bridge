@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { handlePrompt, loadLoopState } from '../../src/claude-code/bridge-loop.ts';
@@ -53,6 +53,31 @@ test('/bridge stop ends a running loop without sending the prompt to Claude', ()
     assert.equal((await loadLoopState(root, SESSION))?.status, 'STOPPED');
     assert.equal(out?.decision, 'block');
     assert.ok(out?.reason);
+  }));
+
+/** What a Stop hook killed mid-review (the user interrupted it) leaves in the state. */
+async function leaveInterruptedReview(root: string): Promise<void> {
+  const file = path.join(root, SESSION, 'state.json');
+  const old = JSON.parse(await readFile(file, 'utf8'));
+  await writeFile(file, JSON.stringify({ ...old, reviewingSince: '2026-10-23T09:00:00.000Z' }));
+}
+
+test('/bridge stop after an interrupted review also clears the review-in-progress mark', () =>
+  withStateRoot(async (root) => {
+    await prompt(root, '/bridge fix the login bug');
+    await leaveInterruptedReview(root);
+    await prompt(root, '/bridge stop');
+    const state = await loadLoopState(root, SESSION);
+    assert.equal(state?.status, 'STOPPED');
+    assert.equal(state?.reviewingSince, null);
+  }));
+
+test('arming again after an interrupted review starts with no review in progress', () =>
+  withStateRoot(async (root) => {
+    await prompt(root, '/bridge first task');
+    await leaveInterruptedReview(root);
+    await prompt(root, '/bridge second task');
+    assert.equal((await loadLoopState(root, SESSION))?.reviewingSince, null);
   }));
 
 test('/bridge with no task is refused and arms nothing', () =>

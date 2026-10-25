@@ -129,6 +129,19 @@ test('while Codex reviews, the conversation ends with Claude\'s new message and 
   await ui.unmount()
 })
 
+test('a loop that is no longer running never says Codex is reviewing, even if an interrupted review left its mark', async ($, on) => {
+  world(on, {
+    [`${DIR}/state.json`]: state({ status: 'STOPPED', reviewingSince: '2026-10-23T10:06:00.000Z' }),
+    [`${LOOP}/001-report.md`]: REPORT_1,
+    [`${LOOP}/001-codex-review.md`]: REVIEW_1,
+  })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Đã dừng/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Codex đang review/ })).toBeFalsy()
+  await ui.unmount()
+})
+
 test('shows the error that stopped the loop', async ($, on) => {
   world(on, { [`${DIR}/state.json`]: state({ status: 'ERROR', error: 'Codex review failed (TIMEOUT)' }) })
   await start($)

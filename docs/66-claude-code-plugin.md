@@ -23,9 +23,9 @@ Non-goals (for now): OpenCode / Antigravity hosts, sharing run history with the 
 | `/bridge <task>` | plugin skill `skills/bridge/SKILL.md` (`/bridge` or `/ai-bridge:bridge`) |
 | Arming | `UserPromptSubmit` hook: receives the line as typed (`/bridge …`), writes the loop state, adds the report contract to Claude's context (`additionalContext`) |
 | `/bridge stop` | same hook; blocks the prompt (Claude never sees it) and marks the loop `STOPPED` |
-| Review | `Stop` hook: Claude's final message (`last_assistant_message`; transcript as fallback) → `buildReviewerInput` → `CodexCliAdapter` → `CodexResponseParser` |
-| Continue | Stop hook prints `{"decision":"block","reason":"<Codex PROMPT + report reminder>"}` |
-| End | no block; `systemMessage` tells the user DONE / NEED_HUMAN / error |
+| Review | `Stop` hook: Claude's final message (`last_assistant_message`; transcript as fallback) → `buildReviewerInput` → `CodexCliAdapter` → `CodexResponseParser`. Its `statusMessage` ("AI Bridge: Codex đang review…") is the spinner line while it runs; in a session without a loop the hook exits at once, so the line only flashes |
+| Continue | Stop hook prints `{"decision":"block","reason":"<Codex PROMPT + acknowledge line + report reminder>","systemMessage":"AI Bridge · Codex · vòng N · CONTINUE — …"}`; the reason asks Claude to open its reply with one line saying the round-N review arrived and what it will do next |
+| End | no block; `systemMessage` tells the user DONE / NEED_HUMAN (`AI Bridge · Codex · vòng N · STATUS — …`, the side pane's label) or the error |
 
 Reused unchanged from the core: `CodexCliAdapter` (thread resume, read-only sandbox),
 `CodexResponseParser` (fails closed on a malformed response), `buildReviewerInput`,
@@ -55,15 +55,16 @@ ends every final message with the `## TASK / ## CHANGES / ## TESTS / ## ISSUES /
 
 | File | Content |
 |---|---|
-| `state.json` | task, project path, status (`RUNNING`/`DONE`/`NEED_HUMAN`/`ERROR`/`STOPPED`), round, Codex thread id, last verdict, `reviewingSince` while Codex runs |
+| `state.json` | task, project path, status (`RUNNING`/`DONE`/`NEED_HUMAN`/`ERROR`/`STOPPED`), round, Codex thread id, last verdict, `reviewingSince` while Codex runs (a Stop hook killed mid-review leaves it set until the next review, `/bridge stop` or re-arm clears it) |
 | `loop-N/NNN-report.md` | Claude's final message that round (`loop-N`: the N-th `/bridge` in this session; a re-arm never overwrites an earlier loop) |
 | `loop-N/NNN-codex-input.md` | the reviewer input |
 | `loop-N/NNN-codex-review.md` | Codex's full response (review + `AI_BRIDGE_RESPONSE` block) |
+| `loop-N/interrupted/NNN-<start>-…` | the files of a review that was killed mid-way (user interrupt): moved here when that round is reviewed again, so the retry keeps the number and overwrites nothing |
 
 ## 5. The pane (`ai-bridge-panel`, optional)
 
 A separate plugin (a Claude Code hooks module, `plugins/claude-code-panel/`) that only reads the
-files above: status, task, round N / max, "Codex đang review…" while the Stop hook runs, the last
+files above: status, task, round N / max, "Codex đang review…" while the Stop hook runs (only while the loop is `RUNNING`), the last
 verdict and Codex's next prompt, and Codex's review of that round. It opens on `/bridge <task>`
 (not on `/bridge stop`), on a session start where the loop is still running, and on
 `/bridge-panel`; it re-reads every 2 s while the loop runs. Tests: `claude plugin test
