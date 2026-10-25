@@ -98,6 +98,7 @@ test('arming again starts a fresh loop: round and Codex thread reset', () =>
     assert.equal(state?.task, 'second task');
     assert.equal(state?.round, 0);
     assert.equal(state?.codexThreadId, null);
+    assert.equal(state?.progress, null);
   }));
 
 test('a session id that is not a plain id is ignored (no path outside the state root)', () =>

@@ -26,10 +26,17 @@ const now = atom({ plugin: 'ai-bridge-panel', key: 'now' } as const, 0)
 
 const STATUS_LABEL: Record<BridgeView['status'], string> = {
   RUNNING: 'Đang chạy',
-  DONE: 'Xong (Codex: DONE)',
-  NEED_HUMAN: 'Cần bạn quyết định',
+  DONE: '✅ Xong — Codex đã duyệt',
+  NEED_HUMAN: '⏸ Cần bạn quyết định',
   ERROR: 'Dừng vì lỗi',
   STOPPED: 'Đã dừng',
+}
+
+/** Codex's verdict on one round, in the words the chat uses. */
+const VERDICT_WORDS: Record<NonNullable<BridgeMessage['status']>, string> = {
+  CONTINUE: 'chưa duyệt',
+  DONE: 'đã duyệt',
+  NEED_HUMAN: 'cần bạn',
 }
 
 const isBridgeCommand = (name: string | undefined) => name === 'bridge' || name === 'ai-bridge:bridge'
@@ -77,6 +84,17 @@ function previewOf(markdown: string): string {
 
 const STATUSES = ['CONTINUE', 'DONE', 'NEED_HUMAN'] as const
 
+/** The first line of the review's `## Kết luận` (Codex's conclusion for the user), if it wrote one. */
+function conclusionOf(review: string): string {
+  let inside = false
+  for (const line of review.split('\n')) {
+    const heading = /^##\s+(.+?)\s*$/.exec(line)
+    if (heading) inside = (heading[1] ?? '').normalize('NFC').toLowerCase() === 'kết luận'
+    else if (inside && line.trim() !== '') return clip(line.trim(), PREVIEW_CHARS)
+  }
+  return ''
+}
+
 /** Codex's response file: its review (before the block), STATUS and PROMPT. Display only: the hook already parsed it strictly. */
 function codexMessage(round: number, raw: string): BridgeMessage {
   const review = (raw.split('<AI_BRIDGE_RESPONSE>')[0] ?? '').trim()
@@ -91,7 +109,7 @@ function codexMessage(round: number, raw: string): BridgeMessage {
     ...(status ? { status } : {}),
     text: `${review}${said}`.trim(),
     ...(prompt !== '' ? { prompt } : {}),
-    preview: previewOf(review) || previewOf(prompt),
+    preview: conclusionOf(review) || previewOf(review) || previewOf(prompt),
   }
 }
 
@@ -119,6 +137,7 @@ async function load($: EngineInterface): Promise<BridgeView | null> {
     maxRounds: s.maxRounds,
     reviewingSince: s.reviewingSince ?? null,
     error: s.error ?? null,
+    progress: s.progress ?? null,
     messages,
   }
 }
@@ -184,7 +203,7 @@ async function stopLoop($: EngineInterface): Promise<void> {
   await refresh($)
 }
 
-const labelOf = (m: BridgeMessage) => `${m.who === 'claude' ? 'Claude' : 'Codex'} · vòng ${m.round}${m.status ? ` · ${m.status}` : ''}`
+const labelOf = (m: BridgeMessage) => `${m.who === 'claude' ? 'Claude' : 'Codex'} · vòng ${m.round}${m.status ? ` · ${VERDICT_WORDS[m.status]}` : ''}`
 
 /** The whole exchange as one Markdown document, for "Copy tất cả". */
 const exchangeOf = (v: BridgeView) => [`# AI Bridge — ${v.task}`, ...v.messages.map(m => `## ${labelOf(m)}\n\n${m.text}`)].join('\n\n')
@@ -271,6 +290,7 @@ export const register: Register = on => {
     }
     const open = await read($, expanded)
     const at = await read($, now)
+    const parts = v.progress?.items ?? []
     const toggle = (id: string) => () =>
       void update($, expanded, list => (list.includes(id) ? list.filter(x => x !== id) : [...list, id]))
 
@@ -280,10 +300,23 @@ export const register: Register = on => {
           <Text bold color={v.status === 'ERROR' ? 'error' : v.status === 'DONE' ? 'success' : v.status === 'NEED_HUMAN' ? 'warning' : undefined}>
             {STATUS_LABEL[v.status] ?? v.status}
           </Text>
-          <Text>Việc: {v.task}</Text>
+          <Text>Việc: {v.progress?.title ?? v.task}</Text>
           <Text dimColor>
             Vòng review: {v.round} / {v.maxRounds}
           </Text>
+          {parts.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>
+                Tiến độ: {parts.filter(p => p.done).length}/{parts.length} phần xong
+              </Text>
+              {parts.map((p, i) => (
+                <Text key={`part-${i}`} color={p.done ? 'success' : undefined} dimColor={!p.done}>
+                  {p.done ? '✓' : '✗'} {p.text}
+                </Text>
+              ))}
+            </Box>
+          )}
+          {v.progress?.verdict && <Text>Codex: {v.progress.verdict}</Text>}
           {v.error !== null && <Text color="error">Lỗi: {v.error}</Text>}
           <Box flexDirection="row" gap={2}>
             {v.messages.length > 0 && (

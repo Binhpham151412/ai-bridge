@@ -82,7 +82,7 @@ test('the exchange reads as a conversation: Claude then Codex, each round, colla
   const codexAt = texts.findIndex(t => /Codex · vòng 1/.test(t))
   expect(claudeAt).toBeGreaterThan(-1)
   expect(codexAt).toBeGreaterThan(claudeAt)
-  expect(await ui.find({ type: 'Text', text: /CONTINUE/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /chưa duyệt/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^Fixed the login check\.$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^Login fixed, expired tokens untested\.$/ })).toBeTruthy()
   // Collapsed: the rest of either message is not drawn.
@@ -370,8 +370,8 @@ test('"Copy tất cả" copies the whole exchange in order, each message under i
   expect(at('fix the login bug')).toBeGreaterThan(-1)
   expect(at('Claude · vòng 1')).toBeGreaterThan(-1)
   expect(at('Fixed the login check.')).toBeGreaterThan(at('Claude · vòng 1'))
-  expect(at('Codex · vòng 1 · CONTINUE')).toBeGreaterThan(at('Fixed the login check.'))
-  expect(at('Claude · vòng 2')).toBeGreaterThan(at('Codex · vòng 1 · CONTINUE'))
+  expect(at('Codex · vòng 1 · chưa duyệt')).toBeGreaterThan(at('Fixed the login check.'))
+  expect(at('Claude · vòng 2')).toBeGreaterThan(at('Codex · vòng 1 · chưa duyệt'))
   expect(at('Added the expired-token test.')).toBeGreaterThan(at('Claude · vòng 2'))
   await ui.unmount()
 })
@@ -399,5 +399,53 @@ test('a surface with no text field says how to start a loop from the chat', asyn
   await start($)
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await ui.find({ type: 'Text', text: /\/bridge/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+// ── How far the task is ─────────────────────────────────────────────────────
+
+const PROGRESS = {
+  title: 'Sửa lỗi đăng nhập.',
+  items: [
+    { text: 'So sánh hash an toàn', done: true },
+    { text: 'Test token hết hạn', done: false },
+  ],
+  verdict: 'Chưa duyệt: còn thiếu test token hết hạn.',
+}
+
+test("the head of the pane says how far the task is: Codex's one-line task, parts done, each part and its conclusion", async ($, on) => {
+  world(on, { [`${DIR}/state.json`]: state({ progress: PROGRESS }), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1 })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  const at = (re: RegExp) => texts.findIndex(t => re.test(t))
+  expect(at(/^Việc: Sửa lỗi đăng nhập\.$/)).toBeGreaterThan(-1)
+  expect(at(/^Tiến độ: 1\/2 phần xong$/)).toBeGreaterThan(-1)
+  expect(at(/^✓ So sánh hash an toàn$/)).toBeGreaterThan(at(/^Tiến độ/))
+  expect(at(/^✗ Test token hết hạn$/)).toBeGreaterThan(at(/^✓ So sánh hash an toàn$/))
+  expect(at(/Codex: Chưa duyệt: còn thiếu test token hết hạn\./)).toBeGreaterThan(-1)
+  // The head comes before the conversation.
+  expect(at(/^✗ Test token hết hạn$/)).toBeLessThan(at(/Claude · vòng 1/))
+  await ui.unmount()
+})
+
+test('before Codex made a checklist the pane shows the task as typed and no progress', async ($, on) => {
+  world(on, { [`${DIR}/state.json`]: state({ round: 0, lastVerdict: null }) })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Việc: fix the login bug$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Tiến độ/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("verdicts read in words, and a Codex message folds to its conclusion", async ($, on) => {
+  const review = `## Việc\nSửa lỗi đăng nhập.\n\n## Tiến độ\n- [x] So sánh hash an toàn\n\n## Kết luận\nĐã xong, đã kiểm chứng.\n\n<AI_BRIDGE_RESPONSE>\n<STATUS>\nDONE\n</STATUS>\n<PROMPT>\nNothing left.\n</PROMPT>\n</AI_BRIDGE_RESPONSE>\n`
+  world(on, { [`${DIR}/state.json`]: state({ status: 'DONE' }), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: review })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Xong — Codex đã duyệt/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Codex · vòng 1 · đã duyệt/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Đã xong, đã kiểm chứng\.$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /DONE/ })).toBeFalsy()
   await ui.unmount()
 })

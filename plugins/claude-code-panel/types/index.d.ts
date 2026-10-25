@@ -14,6 +14,15 @@ export type BridgeMessage = {
   preview: string
 }
 
+/** How far the task is, from Codex's latest review that said it (`progress` in state.json). */
+export type BridgeProgress = {
+  /** The task in one sentence, as Codex wrote it. */
+  title: string | null
+  items: { text: string; done: boolean }[]
+  /** Codex's conclusion: approved, or what is missing. */
+  verdict: string | null
+}
+
 /** What the pane draws: the loop state the ai-bridge plugin's hooks write (docs/66) and the exchange so far. */
 export type BridgeView = {
   /** The N-th `/bridge` of the session: an expanded message is remembered per loop. */
@@ -24,6 +33,7 @@ export type BridgeView = {
   maxRounds: number
   reviewingSince: string | null
   error: string | null
+  progress: BridgeProgress | null
   messages: BridgeMessage[]
 }
 

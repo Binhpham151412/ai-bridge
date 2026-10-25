@@ -23,18 +23,31 @@ Non-goals (for now): OpenCode / Antigravity hosts, sharing run history with the 
 | `/bridge <task>` | plugin skill `skills/bridge/SKILL.md` (`/bridge` or `/ai-bridge:bridge`) |
 | Arming | `UserPromptSubmit` hook: receives the line as typed (`/bridge …`), writes the loop state, adds the report contract to Claude's context (`additionalContext`) |
 | `/bridge stop` | same hook; blocks the prompt (Claude never sees it) and marks the loop `STOPPED` |
-| Review | `Stop` hook: Claude's final message (`last_assistant_message`; transcript as fallback) → `buildReviewerInput` → `CodexCliAdapter` → `CodexResponseParser`. Its `statusMessage` ("AI Bridge: Codex đang review…") is the spinner line while it runs; in a session without a loop the hook exits at once, so the line only flashes |
-| Continue | Stop hook prints `{"decision":"block","reason":"<Codex PROMPT + acknowledge line + report reminder>","systemMessage":"AI Bridge · Codex · vòng N · CONTINUE — …"}`; the reason asks Claude to open its reply with one line saying the round-N review arrived and what it will do next |
-| End | no block; `systemMessage` tells the user DONE / NEED_HUMAN (`AI Bridge · Codex · vòng N · STATUS — …`, the side pane's label) or the error |
+| Review | `Stop` hook: Claude's final message (`last_assistant_message`; transcript as fallback) → `buildChatReviewerInput` (with the task as typed and the previous checklist) → `CodexCliAdapter` → `CodexResponseParser`; `parseReviewProgress` reads the checklist from the review. Its `statusMessage` ("AI Bridge: Codex đang review…") is the spinner line while it runs; in a session without a loop the hook exits at once, so the line only flashes |
+| Continue | Stop hook prints `{"decision":"block","reason":"<Codex PROMPT + acknowledge line + report contract with Codex's checklist>","systemMessage":"<the round message, §2.1>"}`; the reason asks Claude to open its reply with one line saying the round-N review arrived and what it will do next |
+| End | no block; `systemMessage` is the round message (DONE / NEED_HUMAN / round cap, §2.1) or the error |
 
 Reused unchanged from the core: `CodexCliAdapter` (thread resume, read-only sandbox),
-`CodexResponseParser` (fails closed on a malformed response), `buildReviewerInput`,
+`CodexResponseParser` (fails closed on a malformed response),
 `checkEnvForApiKeys` (the $0 rule: any API key in the env stops the loop), executable discovery
-(finds Codex installed by the ChatGPT app).
+(finds Codex installed by the ChatGPT app). The desktop's `buildReviewerInput` is left as it is
+(session history parses its framing back); the chat has its own `buildChatReviewerInput`.
 
 The report contract is the desktop one adapted to chat: instead of writing `REPORT_FILE`, Claude
-ends every final message with the `## TASK / ## CHANGES / ## TESTS / ## ISSUES /
-## NEXT_RECOMMENDATION` report (`buildChatReportContract`).
+ends every final message with a summary for the user, then the `## TASK / ## CHANGES / ## TESTS /
+## ISSUES / ## NEXT_RECOMMENDATION` report for the reviewer (`buildChatReportContract`).
+
+### 2.1 How far the task is (0.3.0)
+
+The user follows the loop in the chat, so each round says, in Vietnamese, whether Codex approved
+and how far the task is:
+
+| Who | What |
+|---|---|
+| Codex (`buildChatReviewerInput`) | gets the task as the user typed it, and from round 2 its own previous checklist. Writes its review in Vietnamese with `## Việc` (the task in one sentence), `## Tiến độ` (3–7 parts, `- [x]` only when done **and** verified; the same parts every round), `## Kết luận` (approved, or what is missing), `## Vấn đề`, `## Việc tiếp theo`; DONE only when every part is `[x]` |
+| The Stop hook | keeps `progress` (`{ title, items, verdict }`) in `state.json`; a review without the checklist keeps the last one. Hands the checklist to Claude in the CONTINUE reason |
+| Claude (`buildChatReportContract`) | opens the end of its final message with **Tóm tắt cho bạn**: Việc, Tiến độ X/Y phần xong (✓ / ✗ per part, ticked against Codex's checklist; its own 3–7 parts before the first review), Vòng này đã làm, Cần bạn |
+| The chat line after each review | `AI Bridge · vòng N/M · <verdict> · X/Y phần xong`, then Codex's conclusion, one `✓`/`✗` line per part, then what happens next. Verdicts: `Codex: chưa duyệt, Claude làm tiếp` (CONTINUE), `✅ Codex đã duyệt` (DONE), `⏸ Codex cần bạn` (NEED_HUMAN, followed by what Codex needs), `⏸ Đã hết số vòng` (round cap, followed by the instruction Codex would have sent) |
 
 ## 3. Rules
 
@@ -55,7 +68,7 @@ ends every final message with the `## TASK / ## CHANGES / ## TESTS / ## ISSUES /
 
 | File | Content |
 |---|---|
-| `state.json` | task, project path, status (`RUNNING`/`DONE`/`NEED_HUMAN`/`ERROR`/`STOPPED`), round, Codex thread id, last verdict, `reviewingSince` while Codex runs (a Stop hook killed mid-review leaves it set until the next review, `/bridge stop` or re-arm clears it) |
+| `state.json` | task, project path, status (`RUNNING`/`DONE`/`NEED_HUMAN`/`ERROR`/`STOPPED`), round, Codex thread id, last verdict, `progress` (Codex's checklist and conclusion, §2.1; absent in a state written before 0.3.0), `reviewingSince` while Codex runs (a Stop hook killed mid-review leaves it set until the next review, `/bridge stop` or re-arm clears it) |
 | `loop-N/NNN-report.md` | Claude's final message that round (`loop-N`: the N-th `/bridge` in this session; a re-arm never overwrites an earlier loop) |
 | `loop-N/NNN-codex-input.md` | the reviewer input |
 | `loop-N/NNN-codex-review.md` | Codex's full response (review + `AI_BRIDGE_RESPONSE` block) |
@@ -64,8 +77,11 @@ ends every final message with the `## TASK / ## CHANGES / ## TESTS / ## ISSUES /
 ## 5. The pane (`ai-bridge-panel`, optional)
 
 A separate plugin (a Claude Code hooks module, `plugins/claude-code-panel/`) that reads the
-files above: status, task, round N / max, "Codex đang review vòng N… 45 giây" while the Stop hook runs (only while the loop is `RUNNING`), the last
-verdict and Codex's next prompt, and Codex's review of that round. It opens on `/bridge <task>`
+files above: status, the task (Codex's one-line `## Việc` once it wrote one), round N / max,
+"Tiến độ: X/Y phần xong" with a ✓/✗ line per part and "Codex: <its conclusion>" (§2.1),
+"Codex đang review vòng N… 45 giây" while the Stop hook runs (only while the loop is `RUNNING`), each
+verdict in words ("chưa duyệt", "đã duyệt", "cần bạn") with Codex's conclusion as the folded line,
+and Codex's next prompt and review of that round. It opens on `/bridge <task>`
 (not on `/bridge stop`), on a session start where the loop is still running, and on
 `/bridge-panel` (asking for the keyboard, so the task field takes the typing); it re-reads every 2 s while the loop runs. Tests: `claude plugin test
 plugins/claude-code-panel` (needs Claude Code ≥ 2.1.308, the version that wrote the mod API).
@@ -116,3 +132,12 @@ code, build again and update the plugin. The hooks take effect in sessions start
   run by the pane's `$.command.run` reaches the `UserPromptSubmit` settings hook (the mod API
   documents it as running "as if the person typed" it; the pane reports it after 30 s if no loop
   starts), and the clipboard write on the desktop surface.
+- Progress (ai-bridge 0.3.0, §2.1): `tests/claude-code/progress.test.ts` and `bridge-stop.test.ts`
+  with the fake Codex (chat line, checklist kept in state, handed to Claude and to the next
+  review), and the pane's progress tests (27 in all). The built `dist/hook.mjs` driven with real
+  Stop-hook input against the **real Codex CLI** (2026-10-25, a `sum(a, b)` task): round 1 wrote the
+  review in Vietnamese with a 5-part checklist and the chat line read `vòng 1/10 · Codex: chưa
+  duyệt, Claude làm tiếp · 2/5 phần xong`; round 2 (resumed thread, previous checklist handed back)
+  kept the same 5 parts and answered `✅ Codex đã duyệt · 5/5 phần xong`. A review without the
+  format leaves the loop running as before, without the count. **Not yet verified**: Claude
+  writing the "Tóm tắt cho bạn" summary in a live session.

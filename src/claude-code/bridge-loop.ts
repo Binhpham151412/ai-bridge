@@ -3,8 +3,9 @@ import path from 'node:path';
 import type { CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
 import { checkEnvForApiKeys } from '../core/cost-guard.ts';
 import { AtomicJsonWriter } from '../core/state-manager/atomic-json-writer.ts';
-import { buildChatReportContract, buildReviewerInput } from '../prompts/templates.ts';
+import { buildChatReportContract, buildChatReviewerInput } from '../prompts/templates.ts';
 import { CodexResponseParser, type BridgeStatus } from '../reports/codex-response-parser.ts';
+import { parseReviewProgress, type ReviewProgress } from './progress.ts';
 import { finalReply, readTranscript } from './transcript.ts';
 
 /**
@@ -30,6 +31,8 @@ export interface LoopState {
   /** When the running Codex review started (for the side pane); null between reviews. */
   reviewingSince: string | null;
   lastVerdict: { round: number; status: BridgeStatus; prompt: string } | null;
+  /** Codex's checklist and conclusion from its latest review that had them (absent in a state written before 0.3.0). */
+  progress?: ReviewProgress | null;
   error: string | null;
   armedAt: string;
   updatedAt: string;
@@ -121,6 +124,7 @@ export async function handlePrompt(input: PromptInput, deps: PromptDeps): Promis
     codexThreadId: null,
     reviewingSince: null,
     lastVerdict: null,
+    progress: null,
     error: null,
     armedAt: at,
     updatedAt: at,
@@ -164,7 +168,15 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
   await mkdir(dir, { recursive: true });
   await setAsideInterrupted(dir, nnn, state.reviewingSince ?? deps.now().toISOString());
   await writeFile(path.join(dir, `${nnn}-report.md`), reply, 'utf8');
-  const reviewerInput = buildReviewerInput({ projectName: path.basename(state.projectPath), sessionId: state.sessionId, iteration: round, reportText: reply });
+  const reviewerInput = buildChatReviewerInput({
+    projectName: path.basename(state.projectPath),
+    sessionId: state.sessionId,
+    iteration: round,
+    reportText: reply,
+    task: state.task,
+    maxRounds: state.maxRounds,
+    checklist: state.progress?.items ?? null,
+  });
   await writeFile(path.join(dir, `${nnn}-codex-input.md`), reviewerInput, 'utf8');
   await saveLoopState(deps.stateRoot, { ...state, reviewingSince: deps.now().toISOString(), updatedAt: deps.now().toISOString() });
 
@@ -186,20 +198,29 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
     return fail(`Codex response not usable (${parsed.errors.map((e) => e.code).join(', ')})`, { round, codexThreadId: result.threadId });
   }
 
-  const patch: Partial<LoopState> = { round, codexThreadId: result.threadId, lastVerdict: { round, status: parsed.status, prompt: parsed.prompt }, error: null };
-  const verdict = parsed.status;
-  const line = (rest: string) => roundLine(round, verdict, rest);
-  if (parsed.status === 'DONE') return end('DONE', line(`xong sau ${round} vòng review, vòng lặp kết thúc.`), patch);
-  if (parsed.status === 'NEED_HUMAN') return end('NEED_HUMAN', line(`Codex cần bạn quyết định:\n${parsed.prompt}`), patch);
+  // A review that left out its checklist keeps the last one.
+  const progress = parseReviewProgress(result.responseText ?? '') ?? state.progress ?? null;
+  const patch: Partial<LoopState> = { round, codexThreadId: result.threadId, lastVerdict: { round, status: parsed.status, prompt: parsed.prompt }, progress, error: null };
+  const message = (verdict: string, next: string) => roundMessage(round, state.maxRounds, verdict, progress, next);
+  if (parsed.status === 'DONE') return end('DONE', message(VERDICT_WORDS.DONE, `Xong sau ${round} vòng review, vòng lặp kết thúc.`), patch);
+  if (parsed.status === 'NEED_HUMAN') return end('NEED_HUMAN', message(VERDICT_WORDS.NEED_HUMAN, `→ Codex cần bạn: ${parsed.prompt}`), patch);
   if (round >= state.maxRounds) {
-    return end('NEED_HUMAN', line(`đã tới giới hạn ${state.maxRounds} vòng nên vòng lặp dừng. Chỉ dẫn Codex định gửi tiếp:\n${parsed.prompt}`), patch);
+    return end('NEED_HUMAN', message('⏸ Đã hết số vòng', `Codex chưa duyệt; vòng lặp dừng ở đây. Chỉ dẫn Codex định gửi tiếp:\n${parsed.prompt}`), patch);
   }
 
   await saveLoopState(deps.stateRoot, { ...state, ...patch, reviewingSince: null, updatedAt: deps.now().toISOString() });
   return {
     decision: 'block',
-    reason: [`AI Bridge — Codex review, round ${round}: CONTINUE. Next instruction:`, '', parsed.prompt, '', acknowledgeReview(round), '', buildChatReportContract()].join('\n'),
-    systemMessage: line('Claude làm tiếp theo chỉ dẫn của Codex.'),
+    reason: [
+      `AI Bridge — Codex review, round ${round}: CONTINUE. Next instruction:`,
+      '',
+      parsed.prompt,
+      '',
+      acknowledgeReview(round),
+      '',
+      buildChatReportContract(progress?.items ?? null),
+    ].join('\n'),
+    systemMessage: message(VERDICT_WORDS.CONTINUE, '→ Claude làm tiếp theo chỉ dẫn của Codex.'),
   };
 }
 
@@ -220,9 +241,26 @@ async function setAsideInterrupted(dir: string, nnn: string, since: string): Pro
   }
 }
 
-/** The user-visible line for a reviewed round, labelled like the side pane: `Codex · vòng N · STATUS`. */
-function roundLine(round: number, status: BridgeStatus, rest: string): string {
-  return `AI Bridge · Codex · vòng ${round} · ${status} — ${rest}`;
+/** Codex's verdict in the user's words, as the chat and the side pane say it. */
+const VERDICT_WORDS: Record<BridgeStatus, string> = {
+  CONTINUE: 'Codex: chưa duyệt, Claude làm tiếp',
+  DONE: '✅ Codex đã duyệt',
+  NEED_HUMAN: '⏸ Codex cần bạn',
+};
+
+/**
+ * What the chat shows after a reviewed round: round of rounds, the verdict in plain words and
+ * how many parts are done; Codex's conclusion and each part (✓/✗); then what happens next.
+ */
+function roundMessage(round: number, maxRounds: number, verdict: string, progress: ReviewProgress | null, next: string): string {
+  const items = progress?.items ?? [];
+  const count = items.length > 0 ? ` · ${items.filter((i) => i.done).length}/${items.length} phần xong` : '';
+  return [
+    `AI Bridge · vòng ${round}/${maxRounds} · ${verdict}${count}`,
+    ...(progress?.verdict ? [progress.verdict] : []),
+    ...items.map((i) => `${i.done ? '✓' : '✗'} ${i.text}`),
+    next,
+  ].join('\n');
 }
 
 /** Makes Claude say in the chat that the review arrived, so the chat matches the side pane. */
