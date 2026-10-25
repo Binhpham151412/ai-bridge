@@ -1,0 +1,19 @@
+{
+  "name": "ai-bridge",
+  "owner": {
+    "name": "BinhPV9"
+  },
+  "description": "AI Bridge for Claude Code: the Codex review loop (/bridge) and its side pane",
+  "plugins": [
+    {
+      "name": "ai-bridge",
+      "source": "./plugins/claude-code",
+      "description": "AI Bridge review loop inside Claude Code (Codex reviews each turn)"
+    },
+    {
+      "name": "ai-bridge-panel",
+      "source": "./plugins/claude-code-panel",
+      "description": "Pane beside the chat showing the /bridge review loop: round, Codex verdict, next prompt, review"
+    }
+  ]
+}

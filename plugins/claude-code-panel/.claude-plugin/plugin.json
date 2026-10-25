@@ -1,0 +1,6 @@
+{
+  "name": "ai-bridge-panel",
+  "version": "0.2.0",
+  "description": "AI Bridge pane beside the chat: the /bridge review loop's round, Codex's verdict and next prompt, and its review",
+  "types": "./types/index.d.ts"
+}

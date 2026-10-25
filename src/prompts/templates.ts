@@ -55,6 +55,34 @@ export function buildReportContract(input: ReportContractInput): string {
   ].join('\n');
 }
 
+/**
+ * docs/66: the report contract for the Claude Code plugin, where Claude is the session the
+ * user is in. The report ends Claude's final message instead of going to REPORT_FILE: the
+ * Stop hook hands that message to the reviewer.
+ */
+export function buildChatReportContract(): string {
+  return [
+    'AI_BRIDGE_REVIEW_LOOP',
+    'The AI Bridge review loop is on for this session: each time you finish a turn, Codex',
+    'reviews your final message and decides what you do next, until it says DONE.',
+    '',
+    'End every final message with this report (each heading exactly once, in this order):',
+    '',
+    '## TASK',
+    '## CHANGES',
+    '## TESTS',
+    '## ISSUES',
+    '## NEXT_RECOMMENDATION',
+    'NEXT_ACTION: CONTINUE, DONE, or NEED_HUMAN',
+    '',
+    'Rules:',
+    '- Do not stop to ask questions: do the work. If a human decision is really needed, say',
+    '  what under ## ISSUES and set NEXT_ACTION: NEED_HUMAN.',
+    '- Describe only work you actually did. Anything not verified must be written as UNKNOWN or',
+    '  NOT VERIFIED — never report unverified work as done.',
+  ].join('\n');
+}
+
 /** The message sent to the Codex reviewer, per the M1 spec's fixed template. */
 export function buildReviewerInput(params: ReviewerInputParams): string {
   return [

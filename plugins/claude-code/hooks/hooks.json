@@ -1,0 +1,11 @@
+{
+  "description": "AI Bridge review loop (docs/66): /bridge arms it, the Stop hook runs the Codex review",
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" prompt", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" stop", "timeout": 900, "statusMessage": "AI Bridge: Codex đang review…" }] }
+    ]
+  }
+}
