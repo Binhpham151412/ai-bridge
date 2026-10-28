@@ -1,14 +1,16 @@
 # 67 — The AI Bridge review loop inside OpenCode: feasibility and a prototype
 
 Status: **feasible; prototype built and run for real** (2026-10-28, OpenCode 1.19.0 on Windows,
-real Codex reviewer on the ChatGPT free plan). Throwaway: not wired into the desktop app, not
-packaged, not on a release path. Builds on docs/66 (the Claude Code plugin).
+real Codex reviewer on the ChatGPT free plan). Builds on docs/66 (the Claude Code plugin).
+**Update 2026-10-29 (docs/68):** no longer throwaway: the sources moved to `src/chat-hosts/opencode/`, the bundle is committed
+(`plugins/opencode/dist/ai-bridge.js`), there is an installer, and the cost-guard point of §5 is closed. Antigravity got the same
+loop (docs/68). Paths below that say `plugins/opencode/bridge.ts` / `entry.ts` mean `src/chat-hosts/opencode/`.
 
 ## 1. Answer
 
 Yes. OpenCode's plugin system has everything the Claude Code plugin gets from hooks, and the
-loop itself (`src/claude-code/bridge-loop.ts`) is reused **unchanged**: the prototype is a 290-line
-adapter (`plugins/opencode/`) that maps OpenCode's hooks onto `handlePrompt` and `handleStop`.
+loop itself (`src/claude-code/bridge-loop.ts`) is reused **unchanged**: the prototype is a ~290-line
+adapter (`src/chat-hosts/opencode/`) that maps OpenCode's hooks onto `handlePrompt` and `handleStop`.
 
 ```text
 /bridge <task>  →  command.execute.before → handlePrompt (arms the loop, contract added to the prompt)
@@ -55,7 +57,7 @@ checklist and `AI Bridge · vòng N/M · …` line, the round cap, `/bridge stop
 in flight, the free-plan "Codex chỉ đọc báo cáo" rule, the quota line from Codex's own log, the
 `$0` cost guard, the OS notification), `buildChatReportContract`, `buildChatReviewerInput`.
 
-**New** (`plugins/opencode/bridge.ts`, `entry.ts`; `scripts/opencode-plugin/build.ts` bundles `entry.ts` to `plugins/opencode/dist/ai-bridge.js`):
+**New** (`src/chat-hosts/opencode/bridge.ts`, `entry.ts`; `scripts/chat-hosts/build.ts` bundles `entry.ts` to `plugins/opencode/dist/ai-bridge.js`):
 
 | Hook | Does |
 |---|---|
@@ -88,7 +90,7 @@ Two OpenCode behaviours the plugin works around (both seen on 1.19.0):
   (`cli/cmd/run.ts`); tried with `opencode run --command bridge …`: the process ended during the
   review and the state stayed `RUNNING`, round 0. The TUI, the desktop app, the web UI and
   `opencode serve` (driven by the SDK, or `opencode run --attach`) keep the plugin alive.
-- **The cost guard looks at OpenCode's environment.** `checkEnvForApiKeys` stops the loop when
+- **(Closed in docs/68 §4: the review now runs without those variables.) The cost guard looked at OpenCode's environment.** `checkEnvForApiKeys` stops the loop when
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` or `CODEX_API_KEY` is set. For
   Claude Code that is right; OpenCode users often keep an API key for the executor in the
   environment, which would stop every loop. Before shipping: guard only what Codex would use
@@ -134,12 +136,11 @@ Two OpenCode behaviours the plugin works around (both seen on 1.19.0):
 ## 7. Try it
 
 ```bash
-node scripts/opencode-plugin/build.ts                 # → plugins/opencode/dist/ai-bridge.js
-mkdir -p <project>/.opencode/plugins && cp plugins/opencode/dist/ai-bridge.js <project>/.opencode/plugins/
-cd <project> && opencode                              # then: /bridge --vong 3 <task>
+node scripts/chat-hosts/install.ts opencode --project <project>   # → <project>/.opencode/plugins/ai-bridge.js
+cd <project> && opencode                                          # then: /bridge --vong 3 <task>
 ```
 
-Use `~/.config/opencode/plugins/` instead for every project. The same commands as the Claude Code
+Use `--global` instead of `--project <project>` for every project (`~/.config/opencode/plugins/`). The same commands as the Claude Code
 plugin: `/bridge [--vong N] <task>`, `/bridge <answer>` while Codex waits on you, `/bridge stop`.
 Codex must be installed and signed in (ChatGPT); `AI_BRIDGE_OPENCODE_DIR`, `AI_BRIDGE_NOTIFY` and
 `AI_BRIDGE_CODEX_CHECK_CODE` work as in docs/66. Nothing is installed globally by the repo.

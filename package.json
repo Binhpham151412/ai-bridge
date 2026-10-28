@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.renderer.json",
     "build": "node scripts/desktop/build.ts",
     "build:claude-plugin": "node scripts/claude-plugin/build.ts",
+    "build:chat-hosts": "node scripts/chat-hosts/build.ts",
     "desktop": "node scripts/desktop/build.ts --dev && electron .",
     "package:win": "node scripts/desktop/build.ts && node scripts/desktop/package-win.ts"
   },

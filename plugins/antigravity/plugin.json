@@ -1,0 +1,5 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "ai-bridge",
+  "description": "AI Bridge review loop inside Antigravity: /bridge <task>, Codex reviews each turn and sends the next instruction until DONE."
+}

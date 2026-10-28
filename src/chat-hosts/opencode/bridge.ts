@@ -1,6 +1,6 @@
-import type { CodexCliAdapter } from '../../src/adapters/chatgpt/codex-cli-adapter.ts';
-import { handlePrompt, handleStop, loadLoopState, type HookOutput, type LoopState } from '../../src/claude-code/bridge-loop.ts';
-import type { CodexAccount } from '../../src/claude-code/codex-account.ts';
+import type { CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
+import { handlePrompt, handleStop, loadLoopState, type HookOutput, type LoopState } from '../../claude-code/bridge-loop.ts';
+import type { CodexAccount } from '../../claude-code/codex-account.ts';
 
 /**
  * docs/67 — the AI Bridge review loop inside OpenCode (prototype). The loop itself is the Claude

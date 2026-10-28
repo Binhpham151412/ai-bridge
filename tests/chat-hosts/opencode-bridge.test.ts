@@ -7,10 +7,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CodexCliAdapter } from '../../src/adapters/chatgpt/codex-cli-adapter.ts';
 import { loadLoopState } from '../../src/claude-code/bridge-loop.ts';
-import { BRIDGE_COMMAND, createBridgeHooks, type BridgeDeps, type OpenCodeClient } from '../../plugins/opencode/bridge.ts';
+import { BRIDGE_COMMAND, createBridgeHooks, type BridgeDeps, type OpenCodeClient } from '../../src/chat-hosts/opencode/bridge.ts';
 
 const FAKE_CODEX = fileURLToPath(new URL('../fixtures/fake-codex/fake-codex.mjs', import.meta.url));
-const BUILD = fileURLToPath(new URL('../../scripts/opencode-plugin/build.ts', import.meta.url));
+const BUILD = fileURLToPath(new URL('../../scripts/chat-hosts/build.ts', import.meta.url));
 const SESSION = 'ses_e7c9eb641ffeqP3DQo7i22kNq2';
 const REPLY = 'Done.\n\n## TASK\nfix login\n## CHANGES\nsrc/login.ts\n## TESTS\npass\n## ISSUES\nnone\n## NEXT_RECOMMENDATION\nnone\nNEXT_ACTION: DONE';
 
@@ -309,7 +309,7 @@ test('/bridge <answer> after Codex asked the user carries the same loop on', () 
 test('the built plugin is one self-contained file whose only export is the plugin function', async () => {
   const out = await mkdtemp(path.join(tmpdir(), 'ai-bridge-oc-build-'));
   try {
-    const build = spawnSync(process.execPath, [BUILD, '--out', out], { encoding: 'utf8', windowsHide: true });
+    const build = spawnSync(process.execPath, [BUILD, 'opencode', '--out', out], { encoding: 'utf8', windowsHide: true });
     assert.equal(build.status, 0, build.stderr);
     const mod = (await import(pathToFileURL(path.join(out, 'ai-bridge.js')).href)) as Record<string, unknown>;
     // OpenCode calls every export of a plugin file and rejects one that is not a function
