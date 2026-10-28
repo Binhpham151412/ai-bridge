@@ -23,6 +23,10 @@ const view = atom({ plugin: 'ai-bridge-panel', key: 'view' } as const, null)
 const expanded = atom({ plugin: 'ai-bridge-panel', key: 'expanded' } as const, [])
 const pending = atom({ plugin: 'ai-bridge-panel', key: 'pending' } as const, null)
 const now = atom({ plugin: 'ai-bridge-panel', key: 'now' } as const, 0)
+/** The hook's own cap (MAX_ROUNDS in bridge-loop.ts): picking it sends no `--vong`. */
+const DEFAULT_ROUNDS = '10'
+const ROUND_CHOICES = ['3', '5', '10'] as const
+const rounds = atom({ plugin: 'ai-bridge-panel', key: 'rounds' } as const, DEFAULT_ROUNDS)
 
 const STATUS_LABEL: Record<BridgeView['status'], string> = {
   RUNNING: 'Đang chạy',
@@ -113,6 +117,20 @@ function codexMessage(round: number, raw: string): BridgeMessage {
   }
 }
 
+const windowWords = (minutes: number) =>
+  minutes % 1440 === 0 ? `${minutes / 1440} ngày` : minutes % 60 === 0 ? `${minutes / 60} giờ` : `${minutes} phút`
+
+/** The Codex plan and quota the Stop hook read from Codex's log (the chat line says the same, with the reset). */
+function quotaOf(a: { plan?: unknown; usedPercent?: unknown; windowMinutes?: unknown } | null, checksCode: boolean): string | null {
+  if (a === null || (typeof a.plan !== 'string' && typeof a.usedPercent !== 'number')) return null
+  const parts = [typeof a.plan === 'string' ? `Codex ${a.plan}` : 'Codex']
+  if (typeof a.usedPercent === 'number') {
+    parts.push(`đã dùng ${Math.round(a.usedPercent)}% hạn mức${typeof a.windowMinutes === 'number' && a.windowMinutes > 0 ? ` ${windowWords(a.windowMinutes)}` : ''}`)
+  }
+  parts.push(checksCode ? 'Codex kiểm tra cả code' : 'Codex chỉ đọc báo cáo')
+  return parts.join(' · ')
+}
+
 async function load($: EngineInterface): Promise<BridgeView | null> {
   const path = await statePath($)
   const dir = path.slice(0, -'/state.json'.length)
@@ -138,6 +156,8 @@ async function load($: EngineInterface): Promise<BridgeView | null> {
     reviewingSince: s.reviewingSince ?? null,
     error: s.error ?? null,
     progress: s.progress ?? null,
+    question: s.status === 'NEED_HUMAN' ? (s.lastVerdict?.prompt ?? null) : null,
+    quota: quotaOf(s.codexAccount ?? null, s.checksCode === true),
     messages,
   }
 }
@@ -156,7 +176,9 @@ async function refresh($: EngineInterface): Promise<BridgeView | null> {
   if (next?.status === 'RUNNING' && next.reviewingSince !== null) await update($, now, () => t)
 
   let sent = await read($, pending)
-  if (sent !== null && next !== null && next.loop > sent.afterLoop) {
+  // A new task arms a newer loop; an answer to Codex sets the same loop running again.
+  const isArmed = sent !== null && next !== null && (next.loop > sent.afterLoop || (sent.continues && next.loop === sent.afterLoop && next.status === 'RUNNING'))
+  if (isArmed) {
     sent = null
     await update($, pending, () => null)
   } else if (sent !== null && sent.ranAt !== null && t - sent.ranAt >= START_WAIT_MS) {
@@ -173,12 +195,19 @@ async function refresh($: EngineInterface): Promise<BridgeView | null> {
   return next
 }
 
-/** The task field's Enter: `/bridge <task>`, as if typed; it waits in the queue while Claude works. */
+/**
+ * The field's Enter: `/bridge <text>`, as if typed; it waits in the queue while Claude works.
+ * While Codex waits on the user the text is the answer (the hook carries the loop on); otherwise
+ * it is a new task, with `--vong N` when the person picked other than the default.
+ */
 async function sendTask($: EngineInterface, text: string): Promise<void> {
-  const task = text.trim()
-  if (task === '') return
-  const afterLoop = (await read($, view))?.loop ?? 0
-  await update($, pending, () => ({ task, afterLoop, ranAt: null }))
+  const typed = text.trim()
+  if (typed === '') return
+  const shown = await read($, view)
+  const continues = shown?.status === 'NEED_HUMAN'
+  const picked = await read($, rounds)
+  const task = continues || picked === DEFAULT_ROUNDS ? typed : `--vong ${picked} ${typed}`
+  await update($, pending, () => ({ task, afterLoop: shown?.loop ?? 0, continues, ranAt: null }))
   await refresh($)
   try {
     await $.command.run({ command: 'bridge', args: task })
@@ -191,14 +220,14 @@ async function sendTask($: EngineInterface, text: string): Promise<void> {
   await refresh($)
 }
 
-/** Stop: what `/bridge stop` writes, and only over the loop the pane showed, still running. */
+/** Stop: what `/bridge stop` writes, and only over the loop the pane showed, still running or waiting on the user. */
 async function stopLoop($: EngineInterface): Promise<void> {
   const shown = await read($, view)
   const path = await statePath($)
   const s = parseOrNull(await readOrNull($, path))
-  if (shown !== null && s?.status === 'RUNNING' && s.loop === shown.loop) {
+  if (shown !== null && (s?.status === 'RUNNING' || s?.status === 'NEED_HUMAN') && s.loop === shown.loop) {
     const at = new Date(await $.clock.now()).toISOString()
-    await $.fs.write(path, JSON.stringify({ ...s, status: 'STOPPED', reviewingSince: null, updatedAt: at }, null, 2))
+    await $.fs.write(path, JSON.stringify({ ...s, status: 'STOPPED', reviewingSince: null, humanReply: null, updatedAt: at }, null, 2))
   }
   await refresh($)
 }
@@ -253,26 +282,42 @@ export const register: Register = on => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button, Markdown } = ui
     const Input = 'Input' in ui ? ui.Input : undefined
+    const Select = 'Select' in ui ? ui.Select : undefined
     const v = await read($, view)
     const sent = await read($, pending)
+    const picked = await read($, rounds)
     const isRunning = v?.status === 'RUNNING'
+    const isWaiting = v?.status === 'NEED_HUMAN'
 
-    // The foot of the pane: the task on its way, the field, or (no field on this surface) how to start from the chat.
+    // The foot of the pane: the task on its way; Codex's question and the field that answers it;
+    // the field for a new task and its number of rounds; or (no field on this surface) the chat.
     const foot =
       sent !== null ? (
         <Text color="suggestion">
           Đã gửi /bridge {sent.task} — chờ Claude nhận việc…
         </Text>
       ) : isRunning ? null : Input ? (
-        <Input
-          key="task"
-          autoFocus
-          rows={3}
-          label="Việc cần làm"
-          placeholder={v?.status === 'NEED_HUMAN' ? 'Trả lời Codex hoặc giao việc tiếp…' : 'Mô tả việc cần làm…'}
-          submitLabel="chạy /bridge"
-          onSubmit={value => void sendTask($, value)}
-        />
+        <Box flexDirection="column" gap={1}>
+          {isWaiting && v.question !== null && <Text color="warning">Codex hỏi: {v.question}</Text>}
+          <Input
+            key="task"
+            autoFocus
+            rows={3}
+            label={isWaiting ? 'Trả lời Codex' : 'Việc cần làm'}
+            placeholder={isWaiting ? 'Trả lời để vòng lặp chạy tiếp…' : 'Mô tả việc cần làm…'}
+            submitLabel={isWaiting ? 'gửi câu trả lời' : 'chạy /bridge'}
+            onSubmit={value => void sendTask($, value)}
+          />
+          {!isWaiting && Select && (
+            <Select
+              key="rounds"
+              label="Số vòng review"
+              value={picked}
+              options={ROUND_CHOICES.map(n => ({ value: n, label: `${n} vòng` }))}
+              onSelect={value => void update($, rounds, () => value)}
+            />
+          )}
+        </Box>
       ) : (
         <Text dimColor>Gõ /bridge &lt;việc cần làm&gt; ở khung chat để bắt đầu; /bridge stop để dừng.</Text>
       )
@@ -317,6 +362,7 @@ export const register: Register = on => {
             </Box>
           )}
           {v.progress?.verdict && <Text>Codex: {v.progress.verdict}</Text>}
+          {v.quota !== null && <Text dimColor>{v.quota}</Text>}
           {v.error !== null && <Text color="error">Lỗi: {v.error}</Text>}
           <Box flexDirection="row" gap={2}>
             {v.messages.length > 0 && (
@@ -324,9 +370,9 @@ export const register: Register = on => {
                 Copy tất cả
               </Button>
             )}
-            {isRunning && (
+            {(isRunning || isWaiting) && (
               <Button key="stop" plain onPress={() => void stopLoop($)}>
-                Dừng vòng lặp
+                {isWaiting ? 'Kết thúc vòng này' : 'Dừng vòng lặp'}
               </Button>
             )}
           </Box>

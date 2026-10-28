@@ -6,5 +6,3 @@ release/
 release-*/
 
 graphify-out/
-
-plugins/claude-code/dist/

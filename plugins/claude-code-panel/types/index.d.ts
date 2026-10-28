@@ -34,14 +34,21 @@ export type BridgeView = {
   reviewingSince: string | null
   error: string | null
   progress: BridgeProgress | null
+  /** What Codex asked the user, while the loop waits on them (NEED_HUMAN); null otherwise. */
+  question: string | null
+  /** "Codex free · đã dùng 62% hạn mức 30 ngày · Codex chỉ đọc báo cáo", from the state after a review; null before. */
+  quota: string | null
   messages: BridgeMessage[]
 }
 
-/** A task sent from the pane's field, until a loop newer than `afterLoop` shows up. */
+/** What the pane's field sent, until a loop newer than `afterLoop` shows up (or, for an answer, that loop runs again). */
 export type PendingTask = {
+  /** The arguments after `/bridge`. */
   task: string
   /** The loop the pane showed when the task was sent (0: none). */
   afterLoop: number
+  /** An answer to Codex: the hook carries loop `afterLoop` on instead of arming a new one. */
+  continues: boolean
   /** When `/bridge` ran (ms, the engine clock); null while it waits in the queue. */
   ranAt: number | null
 }
@@ -55,6 +62,8 @@ declare module 'claude-code' {
       pending: PendingTask | null
       /** The engine clock at the last read while Codex reviews: the reviewing line counts up to it. */
       now: number
+      /** The review rounds picked beside the field for a new task ('3', '5', '10'). */
+      rounds: string
     }
   }
 }

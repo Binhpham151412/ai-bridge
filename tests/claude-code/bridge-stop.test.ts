@@ -362,3 +362,133 @@ test('DONE with every part ticked says Codex approved, in how many rounds', () =
     assert.match(out?.systemMessage ?? '', /^AI Bridge · vòng 1\/10 · ✅ Codex đã duyệt · 3\/3 phần xong\nĐã xong, đã kiểm chứng\.\n/);
     assert.match(out?.systemMessage ?? '', /Xong sau 1 vòng review, vòng lặp kết thúc\.$/);
   }));
+
+// ── The review checks the code, and hears the user's answer ─────────────────
+
+async function patchState(root: string, over: Record<string, unknown>): Promise<void> {
+  const file = path.join(root, SESSION, 'state.json');
+  await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), ...over }));
+}
+
+const PLUS = { plan: 'plus', usedPercent: 20, windowMinutes: 300, resetsAt: Date.parse('2026-10-23T13:00:00.000Z') / 1000 };
+const FREE = { plan: 'free', usedPercent: 62, windowMinutes: 43200, resetsAt: Date.parse('2026-11-04T10:00:00.000Z') / 1000 };
+const cacheAccount = (root: string, account: object) => writeFile(path.join(root, 'codex-account.json'), JSON.stringify(account));
+
+test('on a paid plan the reviewer gets the changes since the loop started, and may read the files', () =>
+  withStateRoot(async (root) => {
+    await handlePrompt({ session_id: SESSION, cwd: root, prompt: '/bridge fix login' }, { stateRoot: root, now: NOW, headCommit: async () => 'base-sha' });
+    await cacheAccount(root, PLUS);
+    const seen: (string | null)[] = [];
+    const changesSince = async (cwd: string, base: string | null) => (seen.push(base), cwd === root ? 'M src/login.ts\n+const ok = true' : null);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { changesSince }));
+    assert.deepEqual(seen, ['base-sha']);
+    const input = await readFile(path.join(root, SESSION, 'loop-1', '001-codex-input.md'), 'utf8');
+    assert.match(input, /CHANGES IN THE PROJECT SINCE THE LOOP STARTED[\s\S]*\+const ok = true/);
+    assert.match(input, /you may read the project's files/i);
+    assert.equal((await loadLoopState(root, SESSION))?.checksCode, true);
+  }));
+
+test('on the free plan, or before the plan is known, Codex reads the report alone: no changes, no file reading', () =>
+  withStateRoot(async (root) => {
+    for (const account of [FREE, null]) {
+      await arm(root);
+      if (account) await cacheAccount(root, account);
+      let asked = false;
+      await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { changesSince: async () => ((asked = true), 'diff') }));
+      const state = await loadLoopState(root, SESSION);
+      const input = await readFile(path.join(root, SESSION, `loop-${state?.loop}`, '001-codex-input.md'), 'utf8');
+      assert.equal(asked, false);
+      assert.doesNotMatch(input, /CHANGES IN THE PROJECT SINCE THE LOOP STARTED/);
+      assert.match(input, /Review ONLY the information provided/);
+      assert.equal(state?.checksCode, false);
+    }
+  }));
+
+test('AI_BRIDGE_CODEX_CHECK_CODE=on checks the code on any plan; =off never', () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    await cacheAccount(root, FREE);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3', AI_BRIDGE_CODEX_CHECK_CODE: 'on' }, { changesSince: async () => 'diff' }));
+    assert.equal((await loadLoopState(root, SESSION))?.checksCode, true);
+
+    await arm(root);
+    await cacheAccount(root, PLUS);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3', AI_BRIDGE_CODEX_CHECK_CODE: 'off' }, { changesSince: async () => 'diff' }));
+    assert.equal((await loadLoopState(root, SESSION))?.checksCode, false);
+  }));
+
+test("after each review the plan and quota from Codex's log are kept, and the chat line shows them", () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    const threads: string[] = [];
+    const codexAccount = async (threadId: string) => (threads.push(threadId), FREE);
+    const out = await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { codexAccount }));
+    assert.deepEqual(threads, ['11111111-1111-1111-1111-111111111111']);
+    assert.deepEqual((await loadLoopState(root, SESSION))?.codexAccount, FREE);
+    assert.deepEqual(JSON.parse(await readFile(path.join(root, 'codex-account.json'), 'utf8')), FREE);
+    const lines = (out?.systemMessage ?? '').split('\n');
+    assert.equal(lines.at(-1), 'Codex free · đã dùng 62% hạn mức 30 ngày · đặt lại sau 12 ngày · Codex chỉ đọc báo cáo');
+  }));
+
+test('the plan learnt in one loop decides the first review of the next', () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '1' }, { codexAccount: async () => PLUS }));
+    await arm(root, 'next task');
+    let asked = false;
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { changesSince: async () => ((asked = true), 'diff') }));
+    assert.equal(asked, true);
+  }));
+
+// ── Notifications: the loop ended, so the user need not watch it ────────────
+
+test('the OS is notified when the loop ends (approved, needs the user, round cap, error), never on CONTINUE', () =>
+  withStateRoot(async (root) => {
+    const sent: { title: string; body: string }[] = [];
+    const notify = (title: string, body: string) => void sent.push({ title, body });
+
+    await arm(root);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }, { notify }));
+    assert.equal(sent.length, 0);
+
+    await arm(root);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '1' }, { notify }));
+    assert.equal(sent.at(-1)?.title, 'AI Bridge');
+    assert.match(sent.at(-1)?.body ?? '', /^vòng 1\/10 · ✅ Codex đã duyệt/);
+
+    await arm(root);
+    const ask = '<AI_BRIDGE_RESPONSE>\n<STATUS>NEED_HUMAN</STATUS>\n<PROMPT>\nPostgres or SQLite?\n</PROMPT>\n</AI_BRIDGE_RESPONSE>\n';
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'ok', FAKE_CODEX_RESPONSE: ask }, { notify }));
+    assert.match(sent.at(-1)?.body ?? '', /⏸ Codex cần bạn[\s\S]*Postgres or SQLite\?/);
+
+    await arm(root);
+    await patchState(root, { round: 9 });
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: 'never' }, { notify }));
+    assert.match(sent.at(-1)?.body ?? '', /⏸ Đã hết số vòng/);
+
+    await arm(root);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'error-exit' }, { notify }));
+    assert.match(sent.at(-1)?.body ?? '', /NON_ZERO_EXIT/);
+    assert.equal(sent.length, 4);
+  }));
+
+test('AI_BRIDGE_NOTIFY=off keeps the OS quiet', () =>
+  withStateRoot(async (root) => {
+    const sent: string[] = [];
+    await arm(root);
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '1', AI_BRIDGE_NOTIFY: 'off' }, { notify: (t) => void sent.push(t) }));
+    assert.deepEqual(sent, []);
+  }));
+
+test("the review after the user answered Codex carries the answer, once", () =>
+  withStateRoot(async (root) => {
+    await arm(root);
+    await patchState(root, { humanReply: 'Use SQLite.' });
+    await handleStop(stopInput(root), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }));
+    const input = await readFile(path.join(root, SESSION, 'loop-1', '001-codex-input.md'), 'utf8');
+    assert.match(input, /THE USER'S ANSWER TO YOUR LAST QUESTION[\s\S]*Use SQLite\./);
+    assert.equal((await loadLoopState(root, SESSION))?.humanReply, null);
+
+    await handleStop(stopInput(root, { stop_hook_active: true }), deps(root, { FAKE_CODEX_MODE: 'done-at', FAKE_CODEX_DONE_AT: '3' }));
+    assert.doesNotMatch(await readFile(path.join(root, SESSION, 'loop-1', '002-codex-input.md'), 'utf8'), /THE USER'S ANSWER/);
+  }));

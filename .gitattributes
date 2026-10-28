@@ -1,0 +1,3 @@
+# The built Claude Code plugin hook (docs/66) is committed byte for byte as esbuild writes it,
+# so tests/claude-code/dist-build.test.ts can compare it with a fresh build on any platform.
+plugins/claude-code/dist/hook.mjs -text

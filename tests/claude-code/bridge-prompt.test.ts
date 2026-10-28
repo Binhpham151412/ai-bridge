@@ -107,3 +107,119 @@ test('a session id that is not a plain id is ignored (no path outside the state 
     assert.equal(out, null);
     await assert.rejects(stat(path.join(root, '..', 'escape')));
   }));
+
+// ── How many rounds: /bridge --vong N <task> ────────────────────────────────
+
+test('/bridge --vong 3 <task> caps this loop at 3 rounds; the task is what follows', () =>
+  withStateRoot(async (root) => {
+    await prompt(root, '/bridge --vong 3 fix the login bug');
+    const state = await loadLoopState(root, SESSION);
+    assert.equal(state?.maxRounds, 3);
+    assert.equal(state?.task, 'fix the login bug');
+  }));
+
+test('--vòng and --rounds work too; without the option the cap stays at 10', () =>
+  withStateRoot(async (root) => {
+    await prompt(root, '/bridge --vòng 5 a');
+    assert.equal((await loadLoopState(root, SESSION))?.maxRounds, 5);
+    await prompt(root, '/bridge --rounds 2 b');
+    assert.equal((await loadLoopState(root, SESSION))?.maxRounds, 2);
+    await prompt(root, '/bridge c');
+    assert.equal((await loadLoopState(root, SESSION))?.maxRounds, 10);
+  }));
+
+test('a round count out of 1–30, or the option with no task, is refused and arms nothing', () =>
+  withStateRoot(async (root) => {
+    for (const text of ['/bridge --vong 0 x', '/bridge --vong 31 x', '/bridge --vong 3', '/bridge --vong abc x']) {
+      const out = await prompt(root, text);
+      assert.equal(out?.decision, 'block', text);
+      assert.equal(await loadLoopState(root, SESSION), null, text);
+    }
+  }));
+
+// ── Answering Codex: /bridge <answer> while the loop waits on the user ──────
+
+/** A loop Codex stopped at NEED_HUMAN after `round` rounds, with its checklist and question. */
+async function waitingOnUser(root: string, over: Record<string, unknown> = {}): Promise<void> {
+  await prompt(root, '/bridge --vong 5 pick a database and wire it');
+  const file = path.join(root, SESSION, 'state.json');
+  const old = JSON.parse(await readFile(file, 'utf8'));
+  await writeFile(
+    file,
+    JSON.stringify({
+      ...old,
+      status: 'NEED_HUMAN',
+      round: 2,
+      codexThreadId: 'thread-1',
+      lastVerdict: { round: 2, status: 'NEED_HUMAN', prompt: 'Postgres or SQLite?' },
+      progress: { title: 'Chọn và nối database.', items: [{ text: 'Chọn database', done: false }, { text: 'Nối database', done: false }], verdict: 'Cần bạn chọn database.' },
+      ...over,
+    }),
+  );
+}
+
+test("/bridge <answer> while Codex waits on the user continues the same loop with the user's answer", () =>
+  withStateRoot(async (root) => {
+    await waitingOnUser(root);
+    const out = await prompt(root, '/bridge SQLite, it is a desktop app');
+    const state = await loadLoopState(root, SESSION);
+    assert.equal(state?.status, 'RUNNING');
+    assert.equal(state?.loop, 1);
+    assert.equal(state?.round, 2);
+    assert.equal(state?.maxRounds, 5);
+    assert.equal(state?.codexThreadId, 'thread-1');
+    assert.equal(state?.task, 'pick a database and wire it');
+    assert.equal(state?.progress?.items.length, 2);
+    assert.equal(state?.humanReply, 'SQLite, it is a desktop app');
+    const context = out?.hookSpecificOutput?.additionalContext ?? '';
+    assert.match(context, /continues the AI Bridge review loop/);
+    assert.match(context, /pick a database and wire it/);
+    assert.match(context, /Postgres or SQLite\?/);
+    assert.match(context, /Codex's checklist[\s\S]*- \[ \] Chọn database/);
+    assert.equal(out?.decision, undefined);
+  }));
+
+test('answering after the round cap gives the loop 3 more rounds, or as many as --vong says', () =>
+  withStateRoot(async (root) => {
+    await waitingOnUser(root, { round: 5 });
+    await prompt(root, '/bridge go on');
+    assert.equal((await loadLoopState(root, SESSION))?.maxRounds, 8);
+
+    await waitingOnUser(root, { round: 5 });
+    await prompt(root, '/bridge --vong 2 go on');
+    const state = await loadLoopState(root, SESSION);
+    assert.equal(state?.maxRounds, state!.round + 2);
+  }));
+
+test('/bridge stop while Codex waits on the user ends that loop, so the next /bridge is a new task', () =>
+  withStateRoot(async (root) => {
+    await waitingOnUser(root);
+    const out = await prompt(root, '/bridge stop');
+    assert.equal(out?.decision, 'block');
+    assert.equal((await loadLoopState(root, SESSION))?.status, 'STOPPED');
+    await prompt(root, '/bridge something else');
+    const state = await loadLoopState(root, SESSION);
+    assert.equal(state?.loop, 2);
+    assert.equal(state?.round, 0);
+    assert.equal(state?.codexThreadId, null);
+    assert.equal(state?.humanReply, null);
+  }));
+
+test('after DONE, /bridge <text> is a new task, not an answer', () =>
+  withStateRoot(async (root) => {
+    await waitingOnUser(root, { status: 'DONE' });
+    await prompt(root, '/bridge next thing');
+    const state = await loadLoopState(root, SESSION);
+    assert.equal(state?.loop, 2);
+    assert.equal(state?.task, 'next thing');
+  }));
+
+// ── Where the work starts: the commit the review compares against ──────────
+
+test('arming records the commit the loop starts from, for the reviewer to diff against', () =>
+  withStateRoot(async (root) => {
+    await handlePrompt({ session_id: SESSION, cwd: 'D:/proj', prompt: '/bridge x' }, { stateRoot: root, now: NOW, headCommit: async (cwd) => (cwd === 'D:/proj' ? 'abc123' : null) });
+    assert.equal((await loadLoopState(root, SESSION))?.baseCommit, 'abc123');
+    await prompt(root, '/bridge y');
+    assert.equal((await loadLoopState(root, SESSION))?.baseCommit, null);
+  }));
