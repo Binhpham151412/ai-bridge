@@ -5,6 +5,7 @@ import { checkEnvForApiKeys } from '../core/cost-guard.ts';
 import { AtomicJsonWriter } from '../core/state-manager/atomic-json-writer.ts';
 import { buildChatReportContract, buildChatReviewerInput } from '../prompts/templates.ts';
 import { CodexResponseParser, type BridgeStatus } from '../reports/codex-response-parser.ts';
+import { checkCodeMode, shouldCheckCode, type CodexAccount } from './codex-account.ts';
 import { parseReviewProgress, type ReviewProgress } from './progress.ts';
 import { finalReply, readTranscript } from './transcript.ts';
 
@@ -33,6 +34,14 @@ export interface LoopState {
   lastVerdict: { round: number; status: BridgeStatus; prompt: string } | null;
   /** Codex's checklist and conclusion from its latest review that had them (absent in a state written before 0.3.0). */
   progress?: ReviewProgress | null;
+  /** The commit the loop started from: the reviewer sees the changes since. Null outside git. */
+  baseCommit?: string | null;
+  /** The user's answer to Codex's NEED_HUMAN (`/bridge <answer>`), for the next review only. */
+  humanReply?: string | null;
+  /** The Codex plan and quota as its log said after the latest review (`codex-account.ts`). */
+  codexAccount?: CodexAccount | null;
+  /** Whether the latest review checked the code itself (paid plan) or read the report alone. */
+  checksCode?: boolean;
   error: string | null;
   armedAt: string;
   updatedAt: string;
@@ -54,6 +63,8 @@ export interface PromptInput {
 export interface PromptDeps {
   stateRoot: string;
   now: () => Date;
+  /** The commit checked out in the project (`git-changes.ts`); absent: none recorded. */
+  headCommit?: (cwd: string) => Promise<string | null>;
 }
 
 export interface StopInput {
@@ -74,9 +85,18 @@ export interface StopDeps {
   locateCodex: () => Promise<Pick<CodexCliAdapter, 'run'> | null>;
   /** Wait between transcript reads when the reply is not flushed yet (default 500 ms, 0 = no retry). */
   transcriptRetryMs?: number;
+  /** The project's changes since the loop's base commit (`git-changes.ts`); asked only when Codex checks the code. */
+  changesSince?: (cwd: string, base: string | null) => Promise<string | null>;
+  /** The plan and quota from the log of Codex thread `threadId` (`codex-account.ts`); absent: unknown. */
+  codexAccount?: (threadId: string) => Promise<CodexAccount | null>;
+  /** An OS notification when the loop ends (`notify.ts`); absent: none. `AI_BRIDGE_NOTIFY=off` silences it. */
+  notify?: (title: string, body: string) => void | Promise<void>;
 }
 
 export const MAX_ROUNDS = 10;
+/** The rounds an answer to Codex adds to a loop that had stopped at its round cap. */
+export const CONTINUE_ROUNDS = 3;
+const ROUNDS_LIMIT = 30;
 const TRANSCRIPT_READS = 4;
 
 const BRIDGE_COMMAND = /^\/(?:ai-bridge:)?bridge(?=\s|$)([\s\S]*)$/;
@@ -98,6 +118,30 @@ function saveLoopState(root: string, state: LoopState): Promise<void> {
   return new AtomicJsonWriter<LoopState>(statePath(root, state.sessionId)).write(state);
 }
 
+/** The Codex plan learnt in any session, so the first review of a new loop knows it too. */
+const accountPath = (root: string) => path.join(root, 'codex-account.json');
+
+async function loadKnownAccount(root: string): Promise<CodexAccount | null> {
+  try {
+    return JSON.parse(await readFile(accountPath(root), 'utf8')) as CodexAccount;
+  } catch {
+    return null;
+  }
+}
+
+/** `--vong N <text>` (also `--vòng`, `--rounds`): this loop's round cap, then the text; or why it is refused. */
+function parseBridgeArg(arg: string): { rounds: number | null; text: string } | { refused: string } {
+  const o = /^--(?:vong|vòng|rounds)(?=\s|$)\s*(\S*)\s*([\s\S]*)$/.exec(arg.normalize('NFC'));
+  if (!o) return { rounds: null, text: arg };
+  const rounds = Number(o[1]);
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > ROUNDS_LIMIT) {
+    return { refused: `AI Bridge: --vong takes a number of rounds from 1 to ${ROUNDS_LIMIT}, e.g. \`/bridge --vong 3 fix the login bug\`.` };
+  }
+  const text = (o[2] ?? '').trim();
+  if (text === '') return { refused: 'AI Bridge: give the task after the number of rounds, e.g. `/bridge --vong 3 fix the login bug`.' };
+  return { rounds, text };
+}
+
 export async function handlePrompt(input: PromptInput, deps: PromptDeps): Promise<HookOutput | null> {
   if (!isPlainId(input.session_id)) return null;
   const m = BRIDGE_COMMAND.exec((input.prompt ?? '').trim());
@@ -108,28 +152,62 @@ export async function handlePrompt(input: PromptInput, deps: PromptDeps): Promis
 
   if (arg === '') return { decision: 'block', reason: 'AI Bridge: give the task, e.g. `/bridge fix the login bug`, or `/bridge stop` to end the loop.' };
   if (arg === 'stop') {
-    if (prev?.status !== 'RUNNING') return { decision: 'block', reason: 'AI Bridge: no review loop is running in this session.' };
-    await saveLoopState(deps.stateRoot, { ...prev, status: 'STOPPED', reviewingSince: null, updatedAt: at });
-    return { decision: 'block', reason: `AI Bridge: review loop stopped after ${prev.round} round(s).` };
+    if (prev?.status !== 'RUNNING' && prev?.status !== 'NEED_HUMAN') return { decision: 'block', reason: 'AI Bridge: no review loop is running in this session.' };
+    await saveLoopState(deps.stateRoot, { ...prev, status: 'STOPPED', reviewingSince: null, humanReply: null, updatedAt: at });
+    return {
+      decision: 'block',
+      reason:
+        prev.status === 'NEED_HUMAN'
+          ? 'AI Bridge: the review loop that was waiting for you is ended; `/bridge <task>` starts a new one.'
+          : `AI Bridge: review loop stopped after ${prev.round} round(s).`,
+    };
+  }
+  const parsed = parseBridgeArg(arg);
+  if ('refused' in parsed) return { decision: 'block', reason: parsed.refused };
+
+  // Codex asked the user something: `/bridge <answer>` carries on with the same loop.
+  if (prev?.status === 'NEED_HUMAN') {
+    const maxRounds = parsed.rounds !== null ? prev.round + parsed.rounds : prev.round >= prev.maxRounds ? prev.round + CONTINUE_ROUNDS : prev.maxRounds;
+    await saveLoopState(deps.stateRoot, { ...prev, status: 'RUNNING', maxRounds, humanReply: parsed.text, reviewingSince: null, error: null, updatedAt: at });
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: [continuation(prev, parsed.text), '', buildChatReportContract(prev.progress?.items ?? null)].join('\n'),
+      },
+    };
   }
 
   await saveLoopState(deps.stateRoot, {
     sessionId: input.session_id,
     projectPath: input.cwd,
-    task: arg,
+    task: parsed.text,
     status: 'RUNNING',
     loop: (prev?.loop ?? 0) + 1,
     round: 0,
-    maxRounds: MAX_ROUNDS,
+    maxRounds: parsed.rounds ?? MAX_ROUNDS,
     codexThreadId: null,
     reviewingSince: null,
     lastVerdict: null,
     progress: null,
+    baseCommit: (await deps.headCommit?.(input.cwd).catch(() => null)) ?? null,
+    humanReply: null,
     error: null,
     armedAt: at,
     updatedAt: at,
   });
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: buildChatReportContract() } };
+}
+
+/** Tells Claude that `/bridge <answer>` answers Codex's question and carries on with the same task. */
+function continuation(prev: LoopState, answer: string): string {
+  return [
+    `This continues the AI Bridge review loop on the task: ${prev.task}`,
+    `After review round ${prev.round}, Codex stopped and asked the user:`,
+    prev.lastVerdict?.prompt ?? '(no question recorded)',
+    '',
+    `The user's answer (the text after /bridge in their message): ${answer}`,
+    'Carry on with the task using that answer; Codex reviews your work again when you finish.',
+  ].join('\n');
 }
 
 async function readReply(input: StopInput, retryMs: number): Promise<string | null> {
@@ -147,8 +225,10 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
   const state = await loadLoopState(deps.stateRoot, input.session_id);
   if (state?.status !== 'RUNNING') return null;
 
+  // The loop ends here (approved, needs the user, round cap, error): tell the OS too.
   const end = async (status: LoopStatus, message: string, patch: Partial<LoopState> = {}): Promise<HookOutput> => {
     await saveLoopState(deps.stateRoot, { ...state, ...patch, status, reviewingSince: null, updatedAt: deps.now().toISOString() });
+    if (!/^(off|0|false|no)$/i.test(deps.env.AI_BRIDGE_NOTIFY ?? '')) await deps.notify?.('AI Bridge', clip(message.replace(/^AI Bridge(?: ·|:) /, ''), 500));
     return { systemMessage: message };
   };
   const fail = (error: string, patch: Partial<LoopState> = {}) => end('ERROR', `AI Bridge: ${error} — review loop stopped.`, { ...patch, error });
@@ -168,6 +248,9 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
   await mkdir(dir, { recursive: true });
   await setAsideInterrupted(dir, nnn, state.reviewingSince ?? deps.now().toISOString());
   await writeFile(path.join(dir, `${nnn}-report.md`), reply, 'utf8');
+  // A free plan's quota goes on the report alone; a paid plan's review checks the code too.
+  const account = state.codexAccount ?? (await loadKnownAccount(deps.stateRoot));
+  const checkCode = shouldCheckCode(checkCodeMode(deps.env), account);
   const reviewerInput = buildChatReviewerInput({
     projectName: path.basename(state.projectPath),
     sessionId: state.sessionId,
@@ -176,6 +259,9 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
     task: state.task,
     maxRounds: state.maxRounds,
     checklist: state.progress?.items ?? null,
+    checkCode,
+    changes: checkCode ? ((await deps.changesSince?.(state.projectPath, state.baseCommit ?? null).catch(() => null)) ?? null) : null,
+    humanReply: state.humanReply ?? null,
   });
   await writeFile(path.join(dir, `${nnn}-codex-input.md`), reviewerInput, 'utf8');
   await saveLoopState(deps.stateRoot, { ...state, reviewingSince: deps.now().toISOString(), updatedAt: deps.now().toISOString() });
@@ -200,8 +286,22 @@ export async function handleStop(input: StopInput, deps: StopDeps): Promise<Hook
 
   // A review that left out its checklist keeps the last one.
   const progress = parseReviewProgress(result.responseText ?? '') ?? state.progress ?? null;
-  const patch: Partial<LoopState> = { round, codexThreadId: result.threadId, lastVerdict: { round, status: parsed.status, prompt: parsed.prompt }, progress, error: null };
-  const message = (verdict: string, next: string) => roundMessage(round, state.maxRounds, verdict, progress, next);
+  // What Codex's own log now says of the plan and quota; kept for the next loops too.
+  const fresh = result.threadId ? ((await deps.codexAccount?.(result.threadId).catch(() => null)) ?? null) : null;
+  if (fresh) await new AtomicJsonWriter<CodexAccount>(accountPath(deps.stateRoot)).write(fresh).catch(() => undefined);
+  const codexAccount = fresh ?? account;
+  const patch: Partial<LoopState> = {
+    round,
+    codexThreadId: result.threadId,
+    lastVerdict: { round, status: parsed.status, prompt: parsed.prompt },
+    progress,
+    humanReply: null,
+    codexAccount,
+    checksCode: checkCode,
+    error: null,
+  };
+  const quota = quotaLine(codexAccount, checkCode, deps.now().getTime());
+  const message = (verdict: string, next: string) => roundMessage(round, state.maxRounds, verdict, progress, quota === null ? next : `${next}\n${quota}`);
   if (parsed.status === 'DONE') return end('DONE', message(VERDICT_WORDS.DONE, `Xong sau ${round} vòng review, vòng lặp kết thúc.`), patch);
   if (parsed.status === 'NEED_HUMAN') return end('NEED_HUMAN', message(VERDICT_WORDS.NEED_HUMAN, `→ Codex cần bạn: ${parsed.prompt}`), patch);
   if (round >= state.maxRounds) {
@@ -239,6 +339,24 @@ async function setAsideInterrupted(dir: string, nnn: string, since: string): Pro
     await mkdir(path.join(dir, 'interrupted'), { recursive: true });
     await rename(from, path.join(dir, 'interrupted', `${nnn}-${stamp}-${name}`));
   }
+}
+
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
+
+const windowWords = (minutes: number) =>
+  minutes % 1440 === 0 ? `${minutes / 1440} ngày` : minutes % 60 === 0 ? `${minutes / 60} giờ` : `${minutes} phút`;
+
+/** `Codex free · đã dùng 62% hạn mức 30 ngày · đặt lại sau 12 ngày · Codex chỉ đọc báo cáo`, or null when nothing is known. */
+function quotaLine(account: CodexAccount | null, checkCode: boolean, nowMs: number): string | null {
+  if (account === null || (account.plan === null && account.usedPercent === null)) return null;
+  const parts = [account.plan ? `Codex ${account.plan}` : 'Codex'];
+  if (account.usedPercent !== null) {
+    parts.push(`đã dùng ${Math.round(account.usedPercent)}% hạn mức${account.windowMinutes ? ` ${windowWords(account.windowMinutes)}` : ''}`);
+  }
+  const left = account.resetsAt !== null ? account.resetsAt * 1000 - nowMs : 0;
+  if (left > 0) parts.push(`đặt lại sau ${left >= 86_400_000 ? `${Math.ceil(left / 86_400_000)} ngày` : `${Math.ceil(left / 3_600_000)} giờ`}`);
+  parts.push(checkCode ? 'Codex kiểm tra cả code' : 'Codex chỉ đọc báo cáo');
+  return parts.join(' · ');
 }
 
 /** Codex's verdict in the user's words, as the chat and the side pane say it. */

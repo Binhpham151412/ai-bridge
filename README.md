@@ -252,17 +252,29 @@ See [docs/13-m4.2-development-journal.md](docs/13-m4.2-development-journal.md).
 
 The same Codex review loop, inside the Claude Code session you are working in: type
 `/bridge <task>`, and each time Claude finishes a turn Codex reviews it and sends the next
-instruction, until DONE or NEED_HUMAN (`/bridge stop` ends it early). The optional
-`ai-bridge-panel` plugin shows the loop in a pane beside the chat: `/bridge-panel` opens it,
-its task field starts a loop on Enter, and it can stop the loop and copy any message. See
-[docs/66-claude-code-plugin.md](docs/66-claude-code-plugin.md).
+instruction, until DONE or NEED_HUMAN. Each round the chat says how far the task is
+("vòng 1/10 · Codex: chưa duyệt · 2/5 phần xong") and how much of your Codex quota is used; on a
+paid ChatGPT plan Codex also checks the code itself (on the free plan it reads Claude's report
+alone, to spare the quota). When the loop ends, an OS notification tells you.
+
+| Command | |
+|---|---|
+| `/bridge <task>` | start a loop (10 review rounds at most) |
+| `/bridge --vong 3 <task>` | start a loop with at most 3 rounds |
+| `/bridge <answer>` | while Codex waits on you: answer it, and the same loop carries on |
+| `/bridge stop` | end the loop |
+| `/bridge-panel` | open the pane (optional `ai-bridge-panel` plugin): start a loop from its field, answer Codex, stop, copy any message |
+
+Install from GitHub (the pane needs Claude Code ≥ 2.1.308):
 
 ```bash
-pnpm build:claude-plugin
-claude plugin marketplace add "<path to this repo>"
+claude plugin marketplace add Binhpham151412/ai-bridge
 claude plugin install ai-bridge@ai-bridge
 claude plugin install ai-bridge-panel@ai-bridge
 ```
+
+See [docs/66-claude-code-plugin.md](docs/66-claude-code-plugin.md) for updating, and for
+installing from a checkout while developing the plugin.
 
 ## Known limitations
 

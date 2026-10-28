@@ -9,6 +9,9 @@ import { CodexCliAdapter } from '../adapters/chatgpt/codex-cli-adapter.ts';
 import { DEFAULT_CONFIG } from '../core/config/config.ts';
 import { createRealExecutableLocator } from '../core/providers/executable-discovery.ts';
 import { handlePrompt, handleStop, type HookOutput } from './bridge-loop.ts';
+import { readCodexAccount } from './codex-account.ts';
+import { changesSince, headCommit } from './git-changes.ts';
+import { osNotify } from './notify.ts';
 
 const stateRoot = process.env.AI_BRIDGE_CLAUDE_CODE_DIR || path.join(homedir(), '.ai-bridge', 'claude-code');
 const now = () => new Date();
@@ -21,13 +24,16 @@ async function readStdin(): Promise<string> {
 
 async function run(kind: string | undefined): Promise<HookOutput | null> {
   const input = JSON.parse(await readStdin());
-  if (kind === 'prompt') return handlePrompt(input, { stateRoot, now });
+  if (kind === 'prompt') return handlePrompt(input, { stateRoot, now, headCommit });
   if (kind === 'stop') {
     return handleStop(input, {
       stateRoot,
       now,
       env: process.env,
       codexTimeoutMs: DEFAULT_CONFIG.codexTimeoutMs,
+      changesSince,
+      codexAccount: (threadId) => readCodexAccount(process.env.CODEX_HOME || path.join(homedir(), '.codex'), threadId),
+      notify: osNotify,
       locateCodex: async () => {
         const exe = await createRealExecutableLocator()('codex');
         return exe === null ? null : new CodexCliAdapter({ executable: exe });

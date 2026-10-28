@@ -67,6 +67,15 @@ export interface ChatReviewerInputParams extends ReviewerInputParams {
   maxRounds: number;
   /** Codex's checklist from its previous review in this loop; null before the first. */
   checklist: readonly ChecklistItem[] | null;
+  /**
+   * Codex checks the code itself: it gets `changes` and may read the files. Off (the default),
+   * it reviews the report alone, which spends the least of a free plan's quota.
+   */
+  checkCode?: boolean;
+  /** The project's changes since the loop started (git status + diff), or null when there are none to show. */
+  changes?: string | null;
+  /** What the user answered to Codex's NEED_HUMAN, when this review follows that answer. */
+  humanReply?: string | null;
 }
 
 const checklistLines = (items: readonly ChecklistItem[]) => items.map((i) => `- [${i.done ? 'x' : ' '}] ${i.text}`);
@@ -115,8 +124,10 @@ export function buildChatReportContract(checklist: readonly ChecklistItem[] | nu
 /**
  * docs/66: the reviewer input for the Claude Code plugin. Unlike `buildReviewerInput` (the
  * desktop's fixed M1 template, which session history parses back), Codex also gets the task as
- * the user gave it and writes its review for the user, in Vietnamese, with a checklist of the
- * task's parts that stays the same from round to round, so the chat can say how far it is.
+ * the user gave it and the user's answer to its last question, on a paid plan the project's
+ * changes since the loop started (it then checks the report against the code), and writes its review for the user, in
+ * Vietnamese, with a checklist of the task's parts that stays the same from round to round, so
+ * the chat can say how far it is.
  */
 export function buildChatReviewerInput(params: ChatReviewerInputParams): string {
   const keep = params.checklist && params.checklist.length > 0 ? params.checklist : null;
@@ -129,8 +140,15 @@ export function buildChatReviewerInput(params: ChatReviewerInputParams): string 
     '',
     'Rules:',
     '',
-    '1. Review ONLY the information provided.',
-    '2. Do not invent completed work.',
+    ...(params.checkCode
+      ? [
+          "1. Check Claude's report against the project: the CHANGES below (when given) and the files",
+          "   themselves. You may read the project's files and run read-only commands (git diff, git log,",
+          '   ls, cat). The sandbox is read-only: do not try to write files, install anything or run the',
+          '   test suite; treat the test results in the report as claims to check against the code.',
+          '2. Do not invent completed work: a part is done only when the code shows it.',
+        ]
+      : ['1. Review ONLY the information provided.', '2. Do not invent completed work.']),
     '3. Do not modify the project yourself.',
     '4. Return exactly one AI_BRIDGE_RESPONSE block.',
     '5. Return exactly one STATUS.',
@@ -155,6 +173,10 @@ export function buildChatReviewerInput(params: ChatReviewerInputParams): string 
     '--- END TASK ---',
     '',
     ...(keep ? ['YOUR CHECKLIST FROM THE PREVIOUS ROUND:', ...checklistLines(keep), ''] : []),
+    ...(params.humanReply ? ["THE USER'S ANSWER TO YOUR LAST QUESTION:", '--- BEGIN ANSWER ---', params.humanReply, '--- END ANSWER ---', ''] : []),
+    ...(params.checkCode && params.changes
+      ? ['CHANGES IN THE PROJECT SINCE THE LOOP STARTED (git, gathered by AI Bridge):', '--- BEGIN CHANGES ---', params.changes, '--- END CHANGES ---', '']
+      : []),
     'CLAUDE REPORT:',
     '--------------------------------',
     '',

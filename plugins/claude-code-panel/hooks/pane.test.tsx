@@ -267,11 +267,65 @@ test('a /bridge that armed no loop is reported after a while and the field comes
 })
 
 test('a finished loop offers the field again, and Enter starts the next loop', async ($, on) => {
-  const { ran } = world(on, { [`${DIR}/state.json`]: state({ status: 'NEED_HUMAN' }), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1 })
+  const { ran } = world(on, { [`${DIR}/state.json`]: state({ status: 'DONE' }), [`${LOOP}/001-report.md`]: REPORT_1, [`${LOOP}/001-codex-review.md`]: REVIEW_1 })
   await start($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Input', key: 'task' }))?.props.label).toBe('Việc cần làm')
   await ui.input({ key: 'task', text: 'use the refresh token' })
   expect(ran).toEqual([{ command: 'bridge', args: 'use the refresh token' }])
+  await ui.unmount()
+})
+
+const WAITING = () =>
+  state({ status: 'NEED_HUMAN', round: 1, lastVerdict: { round: 1, status: 'NEED_HUMAN', prompt: 'Postgres or SQLite?' } })
+
+test("while Codex waits on the user, the pane shows its question and the field answers it, carrying the same loop on", async ($, on) => {
+  const files: Record<string, string> = { [`${DIR}/state.json`]: WAITING(), [`${LOOP}/001-report.md`]: REPORT_1 }
+  const { ran, clock } = world(on, files, { bridge: false })
+  const ran2: string[] = []
+  on('command.run', { command: 'bridge' }, async (_, e) => {
+    ran2.push(e.args)
+    await clock.sleep(1_000)
+    files[`${DIR}/state.json`] = state({ status: 'RUNNING', round: 1 })
+    return {}
+  })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Codex hỏi: Postgres or SQLite\?/ })).toBeTruthy()
+  expect((await ui.find({ type: 'Input', key: 'task' }))?.props.label).toBe('Trả lời Codex')
+  expect(await ui.find({ key: 'rounds' })).toBeFalsy()
+
+  await ui.input({ key: 'task', text: 'SQLite' })
+  expect(ran2).toEqual(['SQLite'])
+  expect(ran).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeTruthy()
+  // Same loop number: the pane sees it running again and lets go of the sent line.
+  await clock.advance(2_000)
+  expect(await ui.find({ type: 'Text', text: /Đang chạy/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('"Kết thúc vòng này" ends a loop that waits on the user, and the field then takes a new task', async ($, on) => {
+  const files: Record<string, string> = { [`${DIR}/state.json`]: WAITING() }
+  world(on, files)
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'stop' })
+  expect(JSON.parse(files[`${DIR}/state.json`] ?? '{}').status).toBe('STOPPED')
+  expect((await ui.find({ type: 'Input', key: 'task' }))?.props.label).toBe('Việc cần làm')
+  await ui.unmount()
+})
+
+test('the number of rounds picked beside the field goes with a new task as --vong; the default adds nothing', async ($, on) => {
+  const { ran } = world(on, {})
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ key: 'rounds' }))?.props.value).toBe('10')
+  await ui.select({ key: 'rounds', value: '3' })
+  expect((await ui.find({ key: 'rounds' }))?.props.value).toBe('3')
+  await ui.input({ key: 'task', text: 'fix it' })
+  expect(ran).toEqual([{ command: 'bridge', args: '--vong 3 fix it' }])
   await ui.unmount()
 })
 
@@ -447,5 +501,22 @@ test("verdicts read in words, and a Codex message folds to its conclusion", asyn
   expect(await ui.find({ type: 'Text', text: /Codex · vòng 1 · đã duyệt/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^Đã xong, đã kiểm chứng\.$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /DONE/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test("the head shows the Codex plan, how much of its quota is used, and whether Codex checks the code", async ($, on) => {
+  const account = { plan: 'free', usedPercent: 62, windowMinutes: 43200, resetsAt: 1795407841 }
+  world(on, { [`${DIR}/state.json`]: state({ codexAccount: account, checksCode: false }) })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^Codex free · đã dùng 62% hạn mức 30 ngày · Codex chỉ đọc báo cáo$/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('before any review there is no quota line', async ($, on) => {
+  world(on, { [`${DIR}/state.json`]: state({ round: 0, lastVerdict: null }) })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /hạn mức/ })).toBeFalsy()
   await ui.unmount()
 })
