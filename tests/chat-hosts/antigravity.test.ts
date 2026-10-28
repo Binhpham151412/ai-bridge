@@ -32,7 +32,7 @@ const system = (step_index: number): AgyStep => ({ step_index, source: 'SYSTEM_S
 const jsonl = (steps: AgyStep[]) => steps.map((s) => JSON.stringify(s)).join('\n') + '\n';
 
 async function withDirs<T>(fn: (d: { root: string; transcript: string; write: (steps: AgyStep[]) => Promise<void> }) => Promise<T>): Promise<T> {
-  const root = await mkdtemp(path.join(tmpdir(), 'ai-bridge-agy-'));
+  const root = await mkdtemp(path.join(tmpdir(), 'ai-bridge-chat-agy-'));
   const transcript = path.join(root, 'transcript_full.jsonl');
   try {
     return await fn({ root, transcript, write: (steps) => writeFile(transcript, jsonl(steps), 'utf8') });

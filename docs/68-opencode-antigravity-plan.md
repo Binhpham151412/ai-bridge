@@ -97,7 +97,7 @@ with an API key through `codex login`; docs/66 does not check that either.)
 
 ## 6. What was verified
 
-**Tests** (`tests/chat-hosts/`, 43; `tsc --noEmit` clean): the OpenCode adapter (20, docs/67 §6); the Antigravity
+**Tests** (`tests/chat-hosts/`, 54 with the adapter's own; `tsc --noEmit` clean): the OpenCode adapter (20, docs/67 §6); the Antigravity
 transcript parser, both hooks (arming once per message, first model call only, refusals, CONTINUE / DONE /
 errors / not-yet-idle / transcript flush wait), the built hook run as agy runs it (stdin/stdout, exit 0,
 unreadable input lets the agent stop), the plugin folder's manifest and `hooks.json` shape; the key-free
@@ -117,20 +117,48 @@ model, Gemini Flash):
   sum(a, b) function does…` → `vòng 1/2 · ✅ Codex đã duyệt · 3/3 phần xong` and `Codex free · đã dùng 68% hạn
   mức 30 ngày · đặt lại sau 26 ngày · Codex chỉ đọc báo cáo` in the output; 66% → 68% for that review.
 
-**Real OpenCode 1.19.0**: docs/67 §6. The sources moved and the review's environment changed (§4) after those runs;
-the unit tests and the bundle test cover both, the live OpenCode run was **not repeated**.
+**Real OpenCode 1.19.0**, second round (2026-10-29, after the move to `src/chat-hosts/`): the committed bundle,
+copied with `scripts/chat-hosts/install.ts opencode --project <dir>` (byte-identical to `plugins/opencode/dist/ai-bridge.js`):
+
+- **Real Codex CONTINUE → the agent acts → real Codex re-reviews → DONE** (ChatGPT free plan, `opencode serve` + SDK, executor
+  `opencode/big-pickle` with its file tools): `/bridge --vong 3 Goal: a.txt must contain the word one and b.txt the word two … in this
+  first turn create ONLY a.txt …`. Round 1 (new Codex thread): `vòng 1/3 · Codex: chưa duyệt · 1/3 phần xong`, Codex's instruction
+  "Create only b.txt … containing exactly the word two …"; the agent opened with the acknowledge line, created `b.txt`, verified;
+  round 2 (resumed thread): `✅ Codex đã duyệt · 3/3 phần xong`. Files on disk: `a.txt` = one, `b.txt` = two. Quota 68% → 71%.
+- **The real TUI** (`opencode -m opencode/big-pickle` run in a pseudo-terminal that typed `/bridge …` and Enter; fake Codex): the loop ran
+  3 rounds to DONE; the TUI drew the chat-only lines (`AI Bridge · vòng 1/3 · Codex: chưa duyệt, Claude làm tiếp`, …, `Xong sau 3 vòng
+  review, vòng lặp kết thúc`) and the agent's acknowledge lines; with `--vong 1` the cap line appeared (`⏸ Đã hết số vòng`) and `/bridge stop`
+  typed next ended the waiting loop (state `STOPPED`, "the review loop that was waiting for you is ended" in the chat).
+  (Keystrokes sent as one burst were dropped by the TUI; typed one by one they arrive.)
+- **The web UI** (same server): `/bridge` typed in its prompt box ran the same loop; `--vong 1` then `/bridge stop` as above. After a refused
+  command the web UI leaves the typed text in the prompt box.
+
+**Real Antigravity 1.3.4**, second round: a multi-turn process (`agy --input-format stream-json --output-format stream-json -p ""`, one
+conversation, turns `{"event":"user","message":{"content":"…"}}`; fake Codex): turn 1 `/bridge --vong 1 …` → round cap (NEED_HUMAN); turn 2
+`/bridge stop` → "the review loop that was waiting for you is ended"; turn 3 a new `/bridge --vong 5 …` → loop 2, three rounds, DONE (the
+prompt cursor armed each message once).
+
+**Tests, base against this branch.** Both run in clean LF checkouts of `941192e` (main) and of this branch, the whole suite:
+
+| | tests | fail | the failures |
+|---|---|---|---|
+| `main` (941192e) | 1074 | 1 | `tests/claude-code/dist-build.test.ts`: the committed `plugins/claude-code/dist/hook.mjs` is **stale on main** (its source gained `antigravity` in the default permissions; the bundle did not) — a one-line difference, fixed by `pnpm build:claude-plugin` + commit, left alone here because `plugins/claude-code` is out of scope |
+| this branch before the last fix | 1117 | 2 | the same, and `agy's own log file is never left behind`: **caused by this branch** — that test counts every temp entry starting with `ai-bridge-agy-`, and `tests/chat-hosts/antigravity.test.ts` made temp folders with that prefix (a race when files run in parallel; it passed alone) |
+
+The prefix is renamed (`ai-bridge-chat-agy-`). A checkout with Windows CRLF line endings (`core.autocrlf=true`, this worktree's default)
+additionally fails 6 `report-validator` tests whose fixtures then have CRLF; they pass in an LF checkout and on the main checkout.
 
 ## 7. Not verified
 
-- agy's interactive prompt (TUI), the Antigravity App and IDE (hooks are documented for all three; the
-  transcript lives under `antigravity` / `antigravity-ide` there, the hook input names the file) and
-  how a status block looks there; OpenCode's TUI and desktop app (docs/67 §6).
+- **Antigravity's interactive prompt (TUI)**, the Antigravity App and IDE. The TUI starts with "Do you trust the contents of this project?"; trusting a
+  new folder is a security setting of the user's agy (`trustedWorkspaces`, currently only agy's own folder), so it was not answered for
+  a scratch folder: the stream-json multi-turn run above stands in. How a status block looks in the TUI is unknown. OpenCode's desktop app.
 - `agy plugin install <path>` and `--global` installs (the project folder was used: installing into
-  `~/.gemini/config/plugins/` changes every agy session of the user's, so it was left to them);
-  whether hook folders keep working directory = plugin folder when installed that way.
+  `~/.gemini/config/plugins/` changes every agy session of the user's); whether hook folders keep working directory = plugin folder when
+  installed that way. `install.ts … --global` likewise (OpenCode: `~/.config/opencode/plugins/`).
 - `agy plugin import claude` (agy can import Claude Code plugins): not tried, it writes agy's settings.
-- A real-Codex CONTINUE round in either tool (quota); `fullyIdle: false`, an agent error, a user interrupt in agy
-  (whether Stop fires) — the code lets all of these pass without a review, from the documentation, not from a run.
+- A real-Codex CONTINUE round **in Antigravity** (done once in OpenCode); `fullyIdle: false`, an agent error, a user interrupt in agy
+  (whether Stop fires): the code lets all of these pass without a review, from the documentation, not from a run.
 - macOS / Linux; agy or OpenCode versions other than 1.3.4 / 1.19.0.
 - The model showing the status block is the model's cooperation (the reason asks for it verbatim): every
   real run did, and the loop's decisions never depend on it.
