@@ -45,7 +45,7 @@ const REVIEW_1 =
 const REPORT_2 = 'Added the expired-token test.\n\n## TESTS\n4 pass'
 
 /** The engine beneath the pane: the files the ai-bridge hooks wrote, by path. */
-function world(on: On, files: Record<string, string>, { now = 0, copies = true, bridge = true } = {}) {
+function world(on: On, files: Record<string, string>, { now = 0, copies = true, bridge = true, commands = ['ai-bridge:bridge'] } = {}) {
   const opened: string[] = []
   const focused: string[] = []
   const ran: { command: string; args: string }[] = []
@@ -56,8 +56,10 @@ function world(on: On, files: Record<string, string>, { now = 0, copies = true, 
   on('session.id', () => ({ value: SESSION }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'bridge-panel' } }))
+  // The plugin's skill is `ai-bridge:bridge` in a session that namespaces plugin commands (the user's desktop one does), plain `bridge` in one that does not.
+  on('command.list', () => ({ value: commands.map(name => ({ name, description: '', source: 'plugin' as const })) }))
   on('ui.open', (_, e) => (opened.push(e.id), e.focus && focused.push(e.id), { value: { isPlaced: true } }))
-  if (bridge) on('command.run', { command: 'bridge' }, (_, e) => (ran.push({ command: e.command, args: e.args }), {}))
+  if (bridge) on('command.run', { command: 'ai-bridge:bridge' }, (_, e) => (ran.push({ command: e.command, args: e.args }), {}))
   on('ui.copy', (_, e) => (copied.push(e.text), { value: copies ? { isCopied: true } : { isCopied: false, reason: 'no-clipboard' } }))
   on('ui.toast', (_, e) => (toasts.push(e.text), { value: undefined }))
   // The engine hands the path on resolved, with the platform's separators.
@@ -214,7 +216,41 @@ test('without a loop the pane offers a task field, focused, and Enter runs /brid
   const field = await ui.find({ type: 'Input', key: 'task' })
   expect(field?.props.autoFocus).toBe(true)
   await ui.input({ key: 'task', text: '  fix the login bug\nand add a test  ' })
-  expect(ran).toEqual([{ command: 'bridge', args: 'fix the login bug\nand add a test' }])
+  expect(ran).toEqual([{ command: 'ai-bridge:bridge', args: 'fix the login bug\nand add a test' }])
+  await ui.unmount()
+})
+
+test('a session that names the command plain /bridge: the pane runs it under that name', async ($, on) => {
+  const { ran } = world(on, {}, { bridge: false, commands: ['bridge'] })
+  on('command.run', { command: 'bridge' }, (_, e) => (ran.push({ command: e.command, args: e.args }), {}))
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.input({ key: 'task', text: 'fix the login bug' })
+  expect(ran).toEqual([{ command: 'bridge', args: 'fix the login bug' }])
+  await ui.unmount()
+})
+
+test('a session that has both names: the namespaced one', async ($, on) => {
+  const { ran } = world(on, {}, { bridge: false, commands: ['bridge', 'ai-bridge:bridge'] })
+  on('command.run', { command: 'ai-bridge:bridge' }, (_, e) => (ran.push({ command: e.command, args: e.args }), {}))
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.input({ key: 'task', text: 'fix the login bug' })
+  expect(ran).toEqual([{ command: 'ai-bridge:bridge', args: 'fix the login bug' }])
+  await ui.unmount()
+})
+
+test('a session that lists neither name: the command is tried as /bridge, and the failure is reported with the field back', async ($, on) => {
+  const { toasts } = world(on, {}, { bridge: false, commands: [] })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  await ui.input({ key: 'task', text: 'fix the login bug' })
+  expect(toasts.some(t => /^AI Bridge: không chạy được \/bridge \(/.test(t))).toBe(true)
+  expect(await ui.find({ type: 'Input', key: 'task' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Đã gửi/ })).toBeFalsy()
   await ui.unmount()
 })
 
@@ -232,7 +268,7 @@ test('after Enter the pane says the task is on its way while it waits for Claude
   const files: Record<string, string> = {}
   const { clock } = world(on, files, { bridge: false })
   // Claude is busy: the command waits in the queue, then the UserPromptSubmit hook arms the loop.
-  on('command.run', { command: 'bridge' }, async () => {
+  on('command.run', { command: 'ai-bridge:bridge' }, async () => {
     await clock.sleep(5_000)
     files[`${DIR}/state.json`] = state({ round: 0, lastVerdict: null })
     return {}
@@ -272,7 +308,7 @@ test('a finished loop offers the field again, and Enter starts the next loop', a
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Input', key: 'task' }))?.props.label).toBe('Việc cần làm')
   await ui.input({ key: 'task', text: 'use the refresh token' })
-  expect(ran).toEqual([{ command: 'bridge', args: 'use the refresh token' }])
+  expect(ran).toEqual([{ command: 'ai-bridge:bridge', args: 'use the refresh token' }])
   await ui.unmount()
 })
 
@@ -283,7 +319,7 @@ test("while Codex waits on the user, the pane shows its question and the field a
   const files: Record<string, string> = { [`${DIR}/state.json`]: WAITING(), [`${LOOP}/001-report.md`]: REPORT_1 }
   const { ran, clock } = world(on, files, { bridge: false })
   const ran2: string[] = []
-  on('command.run', { command: 'bridge' }, async (_, e) => {
+  on('command.run', { command: 'ai-bridge:bridge' }, async (_, e) => {
     ran2.push(e.args)
     await clock.sleep(1_000)
     files[`${DIR}/state.json`] = state({ status: 'RUNNING', round: 1 })
@@ -325,7 +361,7 @@ test('the number of rounds picked beside the field goes with a new task as --von
   await ui.select({ key: 'rounds', value: '3' })
   expect((await ui.find({ key: 'rounds' }))?.props.value).toBe('3')
   await ui.input({ key: 'task', text: 'fix it' })
-  expect(ran).toEqual([{ command: 'bridge', args: '--vong 3 fix it' }])
+  expect(ran).toEqual([{ command: 'ai-bridge:bridge', args: '--vong 3 fix it' }])
   await ui.unmount()
 })
 

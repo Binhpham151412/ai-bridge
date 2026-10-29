@@ -45,6 +45,18 @@ const VERDICT_WORDS: Record<NonNullable<BridgeMessage['status']>, string> = {
 
 const isBridgeCommand = (name: string | undefined) => name === 'bridge' || name === 'ai-bridge:bridge'
 
+/**
+ * The plugin's `/bridge` skill is `ai-bridge:bridge` in a session that namespaces plugin commands
+ * and plain `bridge` in one that does not, and `$.command.run` rejects a name the session does not
+ * know ("no command named /bridge in this session"): ask the session which one it has.
+ */
+const BRIDGE_COMMANDS = ['ai-bridge:bridge', 'bridge'] as const
+
+async function bridgeCommand($: EngineInterface): Promise<string> {
+  const names = (await $.command.list().catch(() => [])).map(c => c.name)
+  return BRIDGE_COMMANDS.find(n => names.includes(n)) ?? 'bridge'
+}
+
 async function stateRoot($: EngineInterface): Promise<string> {
   const own = await $.env.get('AI_BRIDGE_CLAUDE_CODE_DIR')
   if (own) return own
@@ -210,7 +222,7 @@ async function sendTask($: EngineInterface, text: string): Promise<void> {
   await update($, pending, () => ({ task, afterLoop: shown?.loop ?? 0, continues, ranAt: null }))
   await refresh($)
   try {
-    await $.command.run({ command: 'bridge', args: task })
+    await $.command.run({ command: await bridgeCommand($), args: task })
     const ranAt = await $.clock.now()
     await update($, pending, p => (p === null ? null : { ...p, ranAt }))
   } catch (err) {

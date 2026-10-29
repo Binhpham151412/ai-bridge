@@ -19,7 +19,8 @@
   "include": [
     "src/**/*.ts",
     "tests/**/*.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "plugins/opencode/**/*.ts"
   ],
   "exclude": [
     "src/desktop/renderer/**",

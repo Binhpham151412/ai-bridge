@@ -289,6 +289,22 @@ What the install cannot bring, and you need first:
 See [docs/66-claude-code-plugin.md](docs/66-claude-code-plugin.md) for updating, and for
 installing from a checkout while developing the plugin.
 
+### In OpenCode and Antigravity
+
+The same `/bridge` loop (same commands, same Vietnamese checklist and quota line, Codex as the
+reviewer) also runs inside OpenCode (a plugin file) and Antigravity (`agy`; a plugin with hooks).
+Install from a checkout, into one project (add `--global` instead of `--project <dir>` for every
+project; that changes the tool's settings for all of them):
+
+```bash
+node scripts/chat-hosts/install.ts opencode --project <dir>      # <dir>/.opencode/plugins/ai-bridge.js
+node scripts/chat-hosts/install.ts antigravity --project <dir>   # <dir>/.agents/plugins/ai-bridge/
+```
+
+Not in a headless `opencode run` (it exits at the first idle). See
+[docs/68-opencode-antigravity-plan.md](docs/68-opencode-antigravity-plan.md) (design, what was
+checked for real and what was not) and [docs/67](docs/67-opencode-bridge-feasibility.md).
+
 ## Known limitations
 
 See the "Known limitations" section of

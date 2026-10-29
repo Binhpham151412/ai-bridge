@@ -1,0 +1,6 @@
+{
+  "ai-bridge": {
+    "PreInvocation": [{ "type": "command", "command": "node ./dist/hook.mjs pre", "timeout": 30 }],
+    "Stop": [{ "type": "command", "command": "node ./dist/hook.mjs stop", "timeout": 900 }]
+  }
+}
