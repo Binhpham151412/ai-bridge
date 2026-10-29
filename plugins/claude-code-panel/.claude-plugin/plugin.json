@@ -1,6 +1,7 @@
 {
   "name": "ai-bridge-panel",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "AI Bridge pane beside the chat: start /bridge from a task field, answer Codex, follow each round and how far the task is, stop the loop and copy any message",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "dependencies": ["ai-bridge"]
 }

@@ -118,13 +118,17 @@ Driving the loop from the pane (0.3.0):
 
 ## 7. Install
 
-From GitHub (the pane needs Claude Code ≥ 2.1.308):
+From GitHub, in one command (the pane needs Claude Code ≥ 2.1.308):
 
 ```bash
-claude plugin marketplace add Binhpham151412/ai-bridge
-claude plugin install ai-bridge@ai-bridge
-claude plugin install ai-bridge-panel@ai-bridge
+claude plugin install ai-bridge-panel --marketplace Binhpham151412/ai-bridge
 ```
+
+`--marketplace` adds the marketplace first (in user settings), and the pane's `plugin.json` lists
+`ai-bridge` under `dependencies`, so the hooks are installed with it ("+ 1 dependency: ai-bridge").
+Without the pane: `claude plugin install ai-bridge --marketplace Binhpham151412/ai-bridge`. The
+README lists what the install cannot bring: Node.js ≥ 22, the Codex CLI signed in with ChatGPT, and
+no API key in the environment (§3, the $0 rule).
 
 Update with `claude plugin marketplace update ai-bridge`, then `claude plugin update ai-bridge@ai-bridge`
 and `claude plugin update ai-bridge-panel@ai-bridge`. Claude Code copies an installed plugin into
