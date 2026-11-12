@@ -116,6 +116,16 @@ Reads the state file, runs `doctor` (same gating as `start`), acquires the lock,
 | `PAUSED` with iteration 0 | Paused before any iteration completed — nothing was ever persisted to resume from. `RECOVERY_BLOCKED`, exits `3`. |
 | anything else (including mid-`CLAUDE_EXECUTING`/`CODEX_REVIEWING` in a way that can't be distinguished from "still running", `IDLE`, `PREFLIGHT`, a terminal status) | Prints `RECOVERY_BLOCKED` and the reason, exits `3`. Never guesses, never re-runs Claude "just in case." |
 
+## `judge`
+
+```bash
+ai-bridge judge --request <file|-> [--timeout-ms N] [--model NAME]
+```
+
+One read-only verdict for GoalForge: a draft and a rubric in, `pass` or `fail` out, as JSON on stdout. Does not touch a
+project and takes no run lock. Exit `0` verdict, `2` refused (API key / no Codex), `1` no verdict. Full contract:
+[67-judge-command.md](67-judge-command.md).
+
 ## `logs`
 
 ```bash

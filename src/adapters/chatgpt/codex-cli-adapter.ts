@@ -57,6 +57,8 @@ export interface CodexRunOptions {
   env?: NodeJS.ProcessEnv;
   /** M5.10.1: resolved policy, mapped by `codexPermissionArgs`. Omitted → `ask` (read-only sandbox, as before). */
   permissionPolicy?: PermissionPolicy;
+  /** Extra `codex exec` flags placed after the permission flags (the judge command passes `-m <model>`). Default none. */
+  extraArgs?: string[];
   onSpawn?: (pid: number) => void;
   /** The reviewer input was fully written to the CLI's stdin and stdin closed. */
   onInputFlushed?: (bytes: number) => void;
@@ -134,7 +136,7 @@ export class CodexCliAdapter {
     const policy = options.permissionPolicy ?? 'ask';
     const args =
       options.threadId === null
-        ? [...this.commandArgsPrefix, 'exec', '--json', ...codexPermissionArgs(policy, false), '--skip-git-repo-check', '-o', options.outputPath, '-']
+        ? [...this.commandArgsPrefix, 'exec', '--json', ...codexPermissionArgs(policy, false), ...(options.extraArgs ?? []), '--skip-git-repo-check', '-o', options.outputPath, '-']
         : [
             ...this.commandArgsPrefix,
             'exec',

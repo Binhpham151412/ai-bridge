@@ -5,6 +5,8 @@ import { BridgeEngine, CRASH_POINTS, type BridgeStartOptions } from './core/brid
 import type { DoctorReport } from './core/preflight/doctor.ts';
 import { runWorkflowCommand } from './hosts/workflow-cli.ts';
 import { readWorkflowActivity } from './hosts/workflow-read.ts';
+import { runJudgeCli } from './core/judge/judge-command.ts';
+import { realCodexLocator } from './core/judge/real-codex-locator.ts';
 
 function printDoctorReport(report: DoctorReport): void {
   for (const c of report.checks) console.log(`[${c.status}] ${c.name} — ${c.detail}`);
@@ -222,6 +224,24 @@ async function cmdReset(flags: Record<string, string>): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// judge — one read-only verdict for GoalForge (docs/67-judge-command.md); no project, no run lock
+// ---------------------------------------------------------------------------
+
+async function readAllStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function cmdJudge(flags: Record<string, string>): Promise<void> {
+  process.exitCode = await runJudgeCli(
+    flags,
+    { out: (line) => console.log(line), err: (line) => console.error(line), readStdin: readAllStdin },
+    { resolveCodex: realCodexLocator },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // entrypoint
 // ---------------------------------------------------------------------------
 
@@ -240,6 +260,7 @@ async function main(): Promise<void> {
   if (parsed.command === 'logs') return cmdLogs(parsed.flags);
   if (parsed.command === 'reset') return cmdReset(parsed.flags);
   if (parsed.command === 'pause') return cmdPause(parsed.flags);
+  if (parsed.command === 'judge') return cmdJudge(parsed.flags);
   if (parsed.command === 'workflow' && parsed.subcommand) {
     process.exitCode = await runWorkflowCommand(parsed.subcommand, parsed.flags, { out: (line) => console.log(line), err: (line) => console.error(line) });
   }

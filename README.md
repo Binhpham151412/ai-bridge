@@ -175,6 +175,15 @@ JSONL event stream also lives at `.ai-bridge/logs/events.jsonl`, and a per-call 
 (`.ai-bridge/logs/<date>-session.log`) records every Claude/Codex invocation's exit code
 and duration.
 
+## Judge
+
+```bash
+node src/cli.ts judge --request <file|-> [--timeout-ms N] [--model NAME]
+```
+
+A one-shot, read-only verdict on a draft for the GoalForge repository (request JSON in, verdict JSON out, one fresh
+Codex thread, no project, no run lock). See [docs/67-judge-command.md](docs/67-judge-command.md).
+
 ## Reset
 
 ```bash
