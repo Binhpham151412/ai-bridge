@@ -28,7 +28,8 @@
 // Round 6 (the judge's read-only isolation) - what the installed codex 0.167 answers without a model:
 //   `exec --help`          the flag list (FAKE_CODEX_OMIT_FLAG=<flag> drops one; FAKE_CODEX_NO_READ_ONLY=1 drops the
 //                          read-only sandbox value),
-//   `features list`        a feature table (FAKE_CODEX_FEATURES=fail exits 1),
+//   `features list`        a feature table (FAKE_CODEX_FEATURES=fail exits 1, garbage = another format,
+//                          no-<name> leaves one feature out),
 //   `debug prompt-input`   the tool namespaces the model would see: FAKE_CODEX_TOOLS (default
 //                          functions,clock,collaboration) plus one `mcp__<name>` per [mcp_servers.<name>] of
 //                          $CODEX_HOME/config.toml (FAKE_CODEX_PROMPT_INPUT=fail|garbage),
@@ -115,7 +116,13 @@ if (args[0] === 'features' && args[1] === 'list') {
     process.stderr.write('fake-codex: features list failed\n');
     process.exit(1);
   }
-  for (const name of ['apps', 'plugins', 'hooks', 'browser_use', 'computer_use', 'image_generation', 'multi_agent', 'skill_search', 'tool_suggest', 'fast_mode', 'goals']) {
+  const how = process.env.FAKE_CODEX_FEATURES ?? '';
+  if (how === 'garbage') {
+    process.stdout.write('apps (stable): enabled\nplugins (stable): enabled\n'); // a table in another format
+    process.exit(0);
+  }
+  const names = ['apps', 'plugins', 'remote_plugin', 'skill_mcp_dependency_install', 'hooks', 'browser_use', 'computer_use', 'image_generation', 'multi_agent', 'skill_search', 'tool_suggest', 'fast_mode', 'goals'];
+  for (const name of names.filter((n) => how !== `no-${n}`)) {
     process.stdout.write(`${name.padEnd(40)} stable             true\n`);
   }
   process.exit(0);

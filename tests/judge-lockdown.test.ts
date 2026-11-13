@@ -101,6 +101,28 @@ test('a codex that cannot list its features is refused, not guessed at', () =>
     if (!outcome.ok) assert.match(outcome.reason, /feature/);
   }));
 
+for (const name of ['plugins', 'apps']) {
+  test(`a feature list without ${name} is refused: the one measure shown to work cannot be applied`, () =>
+    inWorld(async (w) => {
+      const outcome = await establishReadOnly(adapter(), w.env({ FAKE_CODEX_FEATURES: `no-${name}` }));
+      assert.equal(outcome.ok, false);
+      if (!outcome.ok) assert.ok(outcome.reason.includes(name), outcome.reason);
+    }));
+}
+
+test('a feature list in a format that cannot be parsed is refused, not read as "nothing to disable"', () =>
+  inWorld(async (w) => {
+    const outcome = await establishReadOnly(adapter(), w.env({ FAKE_CODEX_FEATURES: 'garbage' }));
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.match(outcome.reason, /feature/);
+  }));
+
+test('the plugin and skill loaders the codex lists are switched off too', () =>
+  inWorld(async (w) => {
+    const outcome = await establishReadOnly(adapter(), w.env());
+    assert.ok(outcome.ok && outcome.lockdown.disabled.includes('remote_plugin') && outcome.lockdown.disabled.includes('skill_mcp_dependency_install'));
+  }));
+
 test('a tool the model would still see (an MCP server, an app) refuses the launch and is named', () =>
   inWorld(async (w) => {
     const outcome = await establishReadOnly(adapter(), w.env({ FAKE_CODEX_TOOLS: 'functions,clock,mcp__sneaky,apps' }));

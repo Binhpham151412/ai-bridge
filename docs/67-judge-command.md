@@ -36,8 +36,10 @@ verdict). stdout carries **only** the verdict, one JSON line; errors are one lin
      write settings; the sign-in still comes from `CODEX_HOME`), `--ignore-rules`, `--ephemeral`, `--sandbox` with a `read-only` value,
      `--disable`, `--output-last-message`, `--skip-git-repo-check` and `--json`;
    - `features list` must be readable; each feature of a fixed list that brings tools (`apps`, `plugins`, `hooks`, `browser_use`,
-     `browser_use_external`, `computer_use`, `image_generation`, `multi_agent`, `skill_search`, `tool_suggest`) that the CLI lists is
-     passed to `exec` with `--disable` (an unlisted name is not passed). Checked on the real CLI: `--disable plugins --disable apps`
+     `browser_use_external`, `computer_use`, `image_generation`, `multi_agent`, `skill_search`, `tool_suggest`, `remote_plugin`,
+     `skill_mcp_dependency_install`) that the CLI lists is passed to `exec` with `--disable` (an unlisted name is not passed), but a list
+     that does not show `plugins` and `apps`, or that cannot be parsed, refuses the launch: the empty-`CODEX_HOME` check below cannot see
+     what the user's real `CODEX_HOME` adds (installed plugins, skills), so those two switches are the only cover for it. Checked on the real CLI: `--disable plugins --disable apps`
      removes the `mcp__cua_repl` tools of a user's setup, while `-c mcp_servers={}` does not;
    - `debug prompt-input`, run with an **empty `CODEX_HOME`** and those features disabled, must show a tool list holding nothing
      beyond Codex's built-in namespaces `functions` (`exec`, `wait`, `request_user_input`), `clock` (`sleep`) and `collaboration`

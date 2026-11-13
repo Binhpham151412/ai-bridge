@@ -25,7 +25,15 @@ export const REQUIRED_EXEC_FLAGS = [
  * unknown name could be an error). Verified with `codex debug prompt-input`: `--disable plugins --disable apps`
  * removes the `mcp__cua_repl` tools of a user's setup, while `-c mcp_servers={}` does not.
  */
-export const TOOL_FEATURES = ['apps', 'plugins', 'hooks', 'browser_use', 'browser_use_external', 'computer_use', 'image_generation', 'multi_agent', 'skill_search', 'tool_suggest'] as const;
+export const TOOL_FEATURES = ['apps', 'plugins', 'remote_plugin', 'skill_mcp_dependency_install', 'hooks', 'browser_use', 'browser_use_external', 'computer_use', 'image_generation', 'multi_agent', 'skill_search', 'tool_suggest'] as const;
+
+/**
+ * The features whose `--disable` is the one measure shown to remove the tools of the user's installed plugins (the `-c`
+ * override is not). The probe below runs with an empty CODEX_HOME, so it cannot see what the real CODEX_HOME adds (plugins,
+ * skills); without these two switched off nothing else covers it, so a feature list that does not show them, or that cannot
+ * be parsed, refuses the launch.
+ */
+export const REQUIRED_DISABLED = ['plugins', 'apps'] as const;
 
 /**
  * The tool namespaces codex 0.167 gives a session on its own and that no flag removes: `functions` (exec, wait,
@@ -75,6 +83,8 @@ export async function establishReadOnly(codex: CodexCliAdapter, env: NodeJS.Proc
         .filter((tokens) => tokens.length >= 3 && (tokens[tokens.length - 1] === 'true' || tokens[tokens.length - 1] === 'false'))
         .map((tokens) => tokens[0]),
     );
+    const unlisted = REQUIRED_DISABLED.filter((name) => !listed.has(name));
+    if (unlisted.length > 0) return refuse(`its feature list does not show ${unlisted.join(' and ')}, so they cannot be switched off (the list was ${listed.size === 0 ? 'not understood' : 'read'})`);
     const disabled = TOOL_FEATURES.filter((name) => listed.has(name));
     const disableArgs = disabled.flatMap((name) => ['--disable', name]);
 
