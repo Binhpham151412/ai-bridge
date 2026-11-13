@@ -57,6 +57,8 @@ export interface CodexRunOptions {
   env?: NodeJS.ProcessEnv;
   /** M5.10.1: resolved policy, mapped by `codexPermissionArgs`. Omitted → `ask` (read-only sandbox, as before). */
   permissionPolicy?: PermissionPolicy;
+  /** Extra `codex exec` flags placed after the permission flags (the judge command passes `-m <model>`). Default none. */
+  extraArgs?: string[];
   onSpawn?: (pid: number) => void;
   /** The reviewer input was fully written to the CLI's stdin and stdin closed. */
   onInputFlushed?: (bytes: number) => void;
@@ -130,11 +132,17 @@ export class CodexCliAdapter {
     this.commandArgsPrefix = options.commandArgsPrefix ?? [];
   }
 
+  /** Runs a local codex command that asks nothing of a model (`exec --help`, `features list`, `debug prompt-input`). */
+  async probe(args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+    const proc = await runProcess({ command: this.executable, args: [...this.commandArgsPrefix, ...args], cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs });
+    return { ok: proc.exitCode === 0 && !proc.timedOut, stdout: proc.stdout, stderr: proc.stderr };
+  }
+
   async run(options: CodexRunOptions): Promise<CodexRunResult> {
     const policy = options.permissionPolicy ?? 'ask';
     const args =
       options.threadId === null
-        ? [...this.commandArgsPrefix, 'exec', '--json', ...codexPermissionArgs(policy, false), '--skip-git-repo-check', '-o', options.outputPath, '-']
+        ? [...this.commandArgsPrefix, 'exec', '--json', ...codexPermissionArgs(policy, false), ...(options.extraArgs ?? []), '--skip-git-repo-check', '-o', options.outputPath, '-']
         : [
             ...this.commandArgsPrefix,
             'exec',

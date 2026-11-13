@@ -132,9 +132,14 @@ var CodexCliAdapter = class {
     this.executable = options.executable;
     this.commandArgsPrefix = options.commandArgsPrefix ?? [];
   }
+  /** Runs a local codex command that asks nothing of a model (`exec --help`, `features list`, `debug prompt-input`). */
+  async probe(args, options) {
+    const proc = await runProcess({ command: this.executable, args: [...this.commandArgsPrefix, ...args], cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs });
+    return { ok: proc.exitCode === 0 && !proc.timedOut, stdout: proc.stdout, stderr: proc.stderr };
+  }
   async run(options) {
     const policy = options.permissionPolicy ?? "ask";
-    const args = options.threadId === null ? [...this.commandArgsPrefix, "exec", "--json", ...codexPermissionArgs(policy, false), "--skip-git-repo-check", "-o", options.outputPath, "-"] : [
+    const args = options.threadId === null ? [...this.commandArgsPrefix, "exec", "--json", ...codexPermissionArgs(policy, false), ...options.extraArgs ?? [], "--skip-git-repo-check", "-o", options.outputPath, "-"] : [
       ...this.commandArgsPrefix,
       "exec",
       "resume",

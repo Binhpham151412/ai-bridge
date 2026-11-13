@@ -24,8 +24,21 @@
 //
 // FAKE_CODEX_RESPONSE - the agent_message text to emit (defaults to a canned
 // <AI_BRIDGE_RESPONSE> block so adapter-level tests don't need to build one).
+//
+// Round 6 (the judge's read-only isolation) - what the installed codex 0.167 answers without a model:
+//   `exec --help`          the flag list (FAKE_CODEX_OMIT_FLAG=<flag> drops one; FAKE_CODEX_NO_READ_ONLY=1 drops the
+//                          read-only sandbox value),
+//   `features list`        a feature table (FAKE_CODEX_FEATURES=fail exits 1, garbage = another format,
+//                          no-<name> leaves one feature out),
+//   `debug prompt-input`   the tool namespaces the model would see: FAKE_CODEX_TOOLS (default
+//                          functions,clock,collaboration) plus one `mcp__<name>` per [mcp_servers.<name>] of
+//                          $CODEX_HOME/config.toml (FAKE_CODEX_PROMPT_INPUT=fail|garbage),
+//   `exec` without --ignore-user-config  loads (= starts) every MCP server of $CODEX_HOME/config.toml and calls
+//                          the one a prompt names with CALL_TOOL:<name>, like codex does with the user's config.
+// FAKE_CODEX_LOG=<file> gets one JSON line per call: {argv, home}.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const mode = process.env.FAKE_CODEX_MODE || 'ok';
 const args = process.argv.slice(2);
@@ -59,6 +72,75 @@ function threadIdToReport() {
   return requestedThreadId ?? newThreadId;
 }
 
+if (process.env.FAKE_CODEX_LOG) {
+  appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ argv: args, home: process.env.CODEX_HOME ?? null }) + '\n');
+}
+
+/** The [mcp_servers.<name>] tables of $CODEX_HOME/config.toml: { name, command, args }. */
+function userMcpServers() {
+  let text = '';
+  try {
+    text = readFileSync(`${process.env.CODEX_HOME}/config.toml`, 'utf8');
+  } catch {
+    return [];
+  }
+  const servers = [];
+  for (const block of text.split(/^\[mcp_servers\./m).slice(1)) {
+    const name = block.slice(0, block.indexOf(']'));
+    const command = /^command\s*=\s*(".*")\s*$/m.exec(block);
+    const argList = /^args\s*=\s*\[(.*)\]\s*$/m.exec(block);
+    servers.push({ name, command: command ? JSON.parse(command[1]) : null, args: argList ? JSON.parse(`[${argList[1]}]`) : [] });
+  }
+  return servers;
+}
+
+if (args[0] === 'exec' && args.includes('--help')) {
+  const omit = process.env.FAKE_CODEX_OMIT_FLAG;
+  const lines = [
+    ['-c', '--config <key=value>', '--config'],
+    [null, '--disable <FEATURE>', '--disable'],
+    ['-s', process.env.FAKE_CODEX_NO_READ_ONLY ? '--sandbox <SANDBOX_MODE>\n          [possible values: workspace-write, danger-full-access]' : '--sandbox <SANDBOX_MODE>\n          [possible values: read-only, workspace-write, danger-full-access]', '--sandbox'],
+    [null, '--skip-git-repo-check', '--skip-git-repo-check'],
+    [null, '--ephemeral', '--ephemeral'],
+    [null, '--ignore-user-config', '--ignore-user-config'],
+    [null, '--ignore-rules', '--ignore-rules'],
+    [null, '--json', '--json'],
+    ['-o', '--output-last-message <FILE>', '--output-last-message'],
+  ].filter(([, , flag]) => flag !== omit);
+  process.stdout.write('Run Codex non-interactively\n\nUsage: codex exec [OPTIONS] [PROMPT]\n\nOptions:\n');
+  for (const [short, long] of lines) process.stdout.write(`  ${short ? `${short}, ` : '    '}${long}\n`);
+  process.exit(0);
+}
+if (args[0] === 'features' && args[1] === 'list') {
+  if (process.env.FAKE_CODEX_FEATURES === 'fail') {
+    process.stderr.write('fake-codex: features list failed\n');
+    process.exit(1);
+  }
+  const how = process.env.FAKE_CODEX_FEATURES ?? '';
+  if (how === 'garbage') {
+    process.stdout.write('apps (stable): enabled\nplugins (stable): enabled\n'); // a table in another format
+    process.exit(0);
+  }
+  const names = ['apps', 'plugins', 'remote_plugin', 'skill_mcp_dependency_install', 'hooks', 'browser_use', 'computer_use', 'image_generation', 'multi_agent', 'skill_search', 'tool_suggest', 'fast_mode', 'goals'];
+  for (const name of names.filter((n) => how !== `no-${n}`)) {
+    process.stdout.write(`${name.padEnd(40)} stable             true\n`);
+  }
+  process.exit(0);
+}
+if (args[0] === 'debug' && args[1] === 'prompt-input') {
+  const how = process.env.FAKE_CODEX_PROMPT_INPUT;
+  if (how === 'fail') process.exit(1);
+  if (how === 'garbage') {
+    process.stdout.write('not json\n');
+    process.exit(0);
+  }
+  const names = (process.env.FAKE_CODEX_TOOLS ?? 'functions,clock,collaboration').split(',').filter(Boolean);
+  for (const server of userMcpServers()) names.push(`mcp__${server.name}`);
+  const tools = names.map((name) => ({ type: 'namespace', name, description: '', tools: [{ type: 'function', name: 'x' }] }));
+  process.stdout.write(JSON.stringify([{ type: 'additional_tools', id: 'tools', role: 'developer', tools }, { type: 'message', role: 'user', content: [] }]) + '\n');
+  process.exit(0);
+}
+
 if (mode === 'hang') {
   setInterval(() => {}, 1_000_000);
 } else if (mode === 'error-exit') {
@@ -72,6 +154,13 @@ if (mode === 'hang') {
   process.exit(0);
 } else {
   const stdin = readStdin();
+  if (args[0] === 'exec' && !args.includes('--ignore-user-config')) {
+    for (const server of userMcpServers()) {
+      if (server.command === null) continue;
+      spawnSync(server.command, server.args, { stdio: 'ignore' }); // codex starts the configured servers...
+      if (stdin.includes(`CALL_TOOL:${server.name}`)) spawnSync(server.command, [...server.args, '--call'], { stdio: 'ignore' }); // ...and the model may call them
+    }
+  }
   let responseText = process.env.FAKE_CODEX_RESPONSE ?? '<AI_BRIDGE_RESPONSE>\n<STATUS>CONTINUE</STATUS>\n<PROMPT>\nDo the next thing.\n</PROMPT>\n</AI_BRIDGE_RESPONSE>\n';
   if (mode === 'sequence') {
     responseText = isResume

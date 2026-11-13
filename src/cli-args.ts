@@ -1,4 +1,4 @@
-export type CliCommand = 'doctor' | 'start' | 'stop' | 'status' | 'resume' | 'logs' | 'reset' | 'pause' | 'workflow';
+export type CliCommand = 'doctor' | 'start' | 'stop' | 'status' | 'resume' | 'logs' | 'reset' | 'pause' | 'workflow' | 'judge';
 
 /** `ai-bridge workflow <subcommand>` (docs/39 M5.8). */
 export const WORKFLOW_SUBCOMMANDS = ['validate', 'run', 'status', 'pause', 'resume', 'stop', 'list'] as const;
@@ -12,7 +12,7 @@ export interface ParsedArgs {
   error: string | null;
 }
 
-const COMMANDS: readonly CliCommand[] = ['doctor', 'start', 'stop', 'status', 'resume', 'logs', 'reset', 'pause', 'workflow'];
+const COMMANDS: readonly CliCommand[] = ['doctor', 'start', 'stop', 'status', 'resume', 'logs', 'reset', 'pause', 'workflow', 'judge'];
 
 const failed = (error: string): ParsedArgs => ({ command: null, subcommand: null, flags: {}, error });
 
