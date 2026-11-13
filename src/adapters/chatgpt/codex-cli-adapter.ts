@@ -132,6 +132,12 @@ export class CodexCliAdapter {
     this.commandArgsPrefix = options.commandArgsPrefix ?? [];
   }
 
+  /** Runs a local codex command that asks nothing of a model (`exec --help`, `features list`, `debug prompt-input`). */
+  async probe(args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+    const proc = await runProcess({ command: this.executable, args: [...this.commandArgsPrefix, ...args], cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs });
+    return { ok: proc.exitCode === 0 && !proc.timedOut, stdout: proc.stdout, stderr: proc.stderr };
+  }
+
   async run(options: CodexRunOptions): Promise<CodexRunResult> {
     const policy = options.permissionPolicy ?? 'ask';
     const args =

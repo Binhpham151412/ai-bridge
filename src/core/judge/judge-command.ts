@@ -24,7 +24,7 @@ export const MAX_JUDGE_TIMEOUT_MS = 1_800_000;
 /**
  * `ai-bridge judge --request <file|-> [--timeout-ms N] [--model NAME]` (docs/67-judge-command.md).
  * Exit 0: a verdict (pass or fail) is on stdout as one JSON object. Exit 2: refused before running (API key in
- * the environment, Codex not installed). Exit 1: no verdict (bad request, Codex failed or timed out, answer not
+ * the environment, Codex not installed, or a Codex that cannot be put in read-only isolation). Exit 1: no verdict (bad request, Codex failed or timed out, answer not
  * valid). Errors go to stderr as `ERROR_<CODE>: <message>`; stdout stays empty then.
  */
 export async function runJudgeCli(flags: Record<string, string>, io: JudgeCliIo, deps: JudgeCliDeps): Promise<number> {
@@ -58,7 +58,7 @@ export async function runJudgeCli(flags: Record<string, string>, io: JudgeCliIo,
   });
   if (!outcome.ok) {
     io.err(`ERROR_${outcome.code}: ${outcome.message}`);
-    return outcome.code === 'BLOCKED_API_KEY' ? 2 : 1;
+    return outcome.code === 'BLOCKED_API_KEY' || outcome.code === 'READ_ONLY_UNAVAILABLE' ? 2 : 1;
   }
   io.out(JSON.stringify(outcome.verdict));
   return 0;

@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CodexCliAdapter } from '../../adapters/chatgpt/codex-cli-adapter.ts';
 import { checkEnvForApiKeys } from '../cost-guard.ts';
+import { establishReadOnly } from './codex-lockdown.ts';
 import { buildJudgePrompt, parseJudgeRequest, parseJudgeResponse, type JudgeVerdict } from './judge-contract.ts';
 
-export type JudgeErrorCode = 'BAD_REQUEST' | 'BLOCKED_API_KEY' | 'CODEX_FAILED' | 'TIMEOUT' | 'BAD_RESPONSE';
+export type JudgeErrorCode = 'BAD_REQUEST' | 'BLOCKED_API_KEY' | 'READ_ONLY_UNAVAILABLE' | 'CODEX_FAILED' | 'TIMEOUT' | 'BAD_RESPONSE';
 
 export type JudgeOutcome = { ok: true; verdict: JudgeVerdict } | { ok: false; code: JudgeErrorCode; message: string };
 
@@ -22,7 +23,9 @@ export interface JudgeRunOptions {
 /**
  * One verdict. A fresh Codex thread, the read-only sandbox, an empty scratch directory as the working directory
  * (there is nothing of the user's to read), and no AI Bridge run lock or session state: this never touches a
- * project and cannot collide with a running `start`. API-key environments are refused before anything starts.
+ * project and cannot collide with a running `start`. API-key environments are refused before anything starts, and
+ * so is a codex that cannot be isolated (`establishReadOnly`): the user's own codex configuration (MCP servers that
+ * can write, hooks, plugins) is not inherited, and if that cannot be guaranteed nothing is sent.
  */
 export async function runJudge(requestText: string, options: JudgeRunOptions): Promise<JudgeOutcome> {
   const request = parseJudgeRequest(requestText);
@@ -31,6 +34,8 @@ export async function runJudge(requestText: string, options: JudgeRunOptions): P
   if (keys.blocked) {
     return { ok: false, code: 'BLOCKED_API_KEY', message: `Refusing to run with ${keys.foundKeys.join(', ')} set: AI Bridge only uses subscriptions, never API keys.` };
   }
+  const isolation = await establishReadOnly(options.codex, options.env);
+  if (!isolation.ok) return { ok: false, code: 'READ_ONLY_UNAVAILABLE', message: isolation.reason };
   const scratch = await mkdtemp(path.join(options.tmpRoot ?? tmpdir(), 'ai-bridge-judge-'));
   try {
     const run = await options.codex.run({
@@ -41,7 +46,7 @@ export async function runJudge(requestText: string, options: JudgeRunOptions): P
       timeoutMs: options.timeoutMs,
       env: options.env,
       permissionPolicy: 'ask',
-      extraArgs: options.model ? ['-m', options.model] : [],
+      extraArgs: [...isolation.lockdown.args, ...(options.model ? ['-m', options.model] : [])],
     });
     if (!run.ok || run.responseText === null) {
       if (run.errorCode === 'TIMEOUT') return { ok: false, code: 'TIMEOUT', message: `Codex did not answer within ${options.timeoutMs} ms.` };
