@@ -22,7 +22,7 @@ export const DEFAULT_JUDGE_TIMEOUT_MS = 300_000;
 export const MAX_JUDGE_TIMEOUT_MS = 1_800_000;
 
 /**
- * `ai-bridge judge --request <file|-> [--timeout-ms N] [--model NAME]` (docs/67-judge-command.md).
+ * `ai-bridge judge --request <file|-> [--timeout-ms N] [--model NAME]` (docs/69-judge-command.md).
  * Exit 0: a verdict (pass or fail) is on stdout as one JSON object. Exit 2: refused before running (API key in
  * the environment, Codex not installed, or a Codex that cannot be put in read-only isolation). Exit 1: no verdict (bad request, Codex failed or timed out, answer not
  * valid). Errors go to stderr as `ERROR_<CODE>: <message>`; stdout stays empty then.

@@ -1,5 +1,5 @@
 /**
- * The judge contract (docs/67-judge-command.md): one request in, one verdict out, both JSON.
+ * The judge contract (docs/69-judge-command.md): one request in, one verdict out, both JSON.
  *
  * Shared with the GoalForge repository (`goalforge/judge-request@1`, `goalforge/judge-verdict@1`): GoalForge sends
  * a draft that already passed its deterministic checks plus a rubric; the judge answers pass or fail. Everything

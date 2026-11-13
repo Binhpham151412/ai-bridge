@@ -224,7 +224,7 @@ async function cmdReset(flags: Record<string, string>): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// judge — one read-only verdict for GoalForge (docs/67-judge-command.md); no project, no run lock
+// judge — one read-only verdict for GoalForge (docs/69-judge-command.md); no project, no run lock
 // ---------------------------------------------------------------------------
 
 async function readAllStdin(): Promise<string> {

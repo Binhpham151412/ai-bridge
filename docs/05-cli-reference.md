@@ -124,7 +124,7 @@ ai-bridge judge --request <file|-> [--timeout-ms N] [--model NAME]
 
 One read-only verdict for GoalForge: a draft and a rubric in, `pass` or `fail` out, as JSON on stdout. Does not touch a
 project and takes no run lock. Exit `0` verdict, `2` refused (API key / no Codex), `1` no verdict. Full contract:
-[67-judge-command.md](67-judge-command.md).
+[69-judge-command.md](69-judge-command.md).
 
 ## `logs`
 

@@ -1,4 +1,4 @@
-# 67 — The judge command (`ai-bridge judge`)
+# 69 — The judge command (`ai-bridge judge`)
 
 ## 1. Purpose
 

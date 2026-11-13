@@ -182,7 +182,7 @@ node src/cli.ts judge --request <file|-> [--timeout-ms N] [--model NAME]
 ```
 
 A one-shot, read-only verdict on a draft for the GoalForge repository (request JSON in, verdict JSON out, one fresh
-Codex thread, no project, no run lock). See [docs/67-judge-command.md](docs/67-judge-command.md).
+Codex thread, no project, no run lock). See [docs/69-judge-command.md](docs/69-judge-command.md).
 
 ## Reset
 
