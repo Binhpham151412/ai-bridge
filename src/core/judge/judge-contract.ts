@@ -164,7 +164,7 @@ export function parseJudgeResponse(responseText: string, request: JudgeRequest, 
   }
   const failedGating = metrics.filter((m) => expected.get(m.id)?.gating && !m.passed).map((m) => m.id);
   if (raw.verdict === 'pass' && failedGating.length > 0) return fail(`The verdict says pass but gating metric(s) did not pass: ${failedGating.join(', ')}.`);
-  if (!raw.reasons.every(isString)) return fail('every reason must be a string.');
+  if (!raw.reasons.every((r) => isString(r) && r.trim() !== '')) return fail('every reason must be a non-blank string.');
   if (raw.verdict === 'fail' && raw.reasons.length === 0) return fail('A fail verdict needs at least one reason.');
   const feedback: JudgeVerdict['feedback'] = [];
   for (const item of raw.feedback) {

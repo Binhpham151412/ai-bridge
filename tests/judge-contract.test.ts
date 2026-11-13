@@ -125,6 +125,8 @@ for (const [name, text, expected] of [
   ['a verdict that is neither pass nor fail', fence({ ...goodAnswer, verdict: 'maybe' }), /pass" or "fail/],
   ['a pass with a failed gating metric', fence({ ...goodAnswer, metrics: [{ id: 'grounded', value: null, passed: false }, { id: 'policy_and_tone', value: null, passed: true }] }), /gating metric/],
   ['a fail without a reason', fence({ ...goodAnswer, verdict: 'fail', reasons: [] }), /at least one reason/],
+  ['a blank reason', fence({ ...goodAnswer, verdict: 'fail', metrics: [{ id: 'grounded', value: null, passed: false }, { id: 'policy_and_tone', value: null, passed: true }], reasons: ['  '] }), /non-blank string/],
+  ['a pass with an empty reason', fence({ ...goodAnswer, reasons: ['Fine.', ''] }), /non-blank string/],
   ['a missing rubric metric', fence({ ...goodAnswer, metrics: [{ id: 'grounded', value: null, passed: true }] }), /exactly the rubric metrics/],
   ['an unknown metric', fence({ ...goodAnswer, metrics: [...goodAnswer.metrics, { id: 'extra', value: null, passed: true }] }), /exactly the rubric metrics/],
   ['a repeated metric', fence({ ...goodAnswer, metrics: [goodAnswer.metrics[0], goodAnswer.metrics[0]] }), /exactly the rubric metrics/],

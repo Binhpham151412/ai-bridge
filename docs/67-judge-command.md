@@ -30,8 +30,20 @@ verdict). stdout carries **only** the verdict, one JSON line; errors are one lin
 2. Refuses to run when `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` or `CODEX_API_KEY` is set (docs/07),
    naming the variable, never its value.
 3. Runs `codex exec` **once, on a fresh thread, in the read-only sandbox, with an empty scratch directory as the working
-   directory** (nothing of the user's is readable); the prompt goes in on stdin; the scratch directory is removed afterwards.
+   directory**; the prompt goes in on stdin; the scratch directory is removed afterwards. Read-only means no writes and no
+   network from commands the model runs; it does **not** mean nothing outside the scratch directory can be read: the model
+   can read any path the user can. The scratch directory only keeps the starting point empty. Codex also loads the user's own
+   configuration (`~/.codex`), including any MCP servers set there; the judge does not turn them off (unverified whether
+   it could).
 4. Takes the answer only if it is **exactly one** fenced `json` block, and checks it against the rubric.
+
+### Where the data goes
+
+The request carries a customer's ticket, the draft reply and the help-center evidence; Codex sends them to OpenAI. The command only
+runs when the caller (GoalForge, `GOALFORGE_JUDGE_COMMAND`) asks for it, so this is opt-in, but a person who turns it on should
+know that real ticket text leaves the machine. Run it with `--timeout-ms` **below** the caller's own time limit: when the caller
+kills the command (a hard kill of the process tree) the scratch directory (`ai-bridge-judge-*` in the OS temp directory, holding
+the model's last message) is not removed.
 
 ## 4. Contract (shared with GoalForge)
 
