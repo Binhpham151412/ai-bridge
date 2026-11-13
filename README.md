@@ -274,16 +274,45 @@ alone, to spare the quota). When the loop ends, an OS notification tells you.
 | `/bridge stop` | end the loop |
 | `/bridge-panel` | open the pane (optional `ai-bridge-panel` plugin): start a loop from its field, answer Codex, stop, copy any message |
 
-Install from GitHub (the pane needs Claude Code ≥ 2.1.308):
+### Install
+
+One command installs both plugins (the pane, and the `ai-bridge` hooks it depends on):
 
 ```bash
-claude plugin marketplace add Binhpham151412/ai-bridge
-claude plugin install ai-bridge@ai-bridge
-claude plugin install ai-bridge-panel@ai-bridge
+claude plugin install ai-bridge-panel --marketplace Binhpham151412/ai-bridge
 ```
+
+Without the pane (only `/bridge` in the chat):
+`claude plugin install ai-bridge --marketplace Binhpham151412/ai-bridge`. Then start a new
+Claude Code session, or run `/reload-plugins` in an open one.
+
+What the install cannot bring, and you need first:
+
+| | |
+|---|---|
+| Node.js 22 or newer | the hook runs with `node` |
+| Codex CLI, signed in with a ChatGPT account | the reviewer. The ChatGPT/Codex desktop app installs it; or `npm install -g @openai/codex`, then `codex login`. The free plan works: Codex then reads Claude's report alone, to spare the quota |
+| Claude Code 2.1.308 or newer | for the pane (`/bridge` alone works on older versions) |
+| No `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` or `CODEX_API_KEY` in the environment | with any of them set, the loop stops at once, so nothing is billed to an API key |
 
 See [docs/66-claude-code-plugin.md](docs/66-claude-code-plugin.md) for updating, and for
 installing from a checkout while developing the plugin.
+
+### In OpenCode and Antigravity
+
+The same `/bridge` loop (same commands, same Vietnamese checklist and quota line, Codex as the
+reviewer) also runs inside OpenCode (a plugin file) and Antigravity (`agy`; a plugin with hooks).
+Install from a checkout, into one project (add `--global` instead of `--project <dir>` for every
+project; that changes the tool's settings for all of them):
+
+```bash
+node scripts/chat-hosts/install.ts opencode --project <dir>      # <dir>/.opencode/plugins/ai-bridge.js
+node scripts/chat-hosts/install.ts antigravity --project <dir>   # <dir>/.agents/plugins/ai-bridge/
+```
+
+Not in a headless `opencode run` (it exits at the first idle). See
+[docs/68-opencode-antigravity-plan.md](docs/68-opencode-antigravity-plan.md) (design, what was
+checked for real and what was not) and [docs/67](docs/67-opencode-bridge-feasibility.md).
 
 ## Known limitations
 
